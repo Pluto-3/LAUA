@@ -86,6 +86,14 @@ class PtySession:
                 exit_code=127,
                 cwd=self.cwd,
             )
+        except PermissionError:
+            return CommandResult(
+                args=args,
+                stdout="",
+                stderr=f"Permission denied: {args[0]}",
+                exit_code=126,
+                cwd=self.cwd,
+            )
 
         return CommandResult(
             args=args,
@@ -98,17 +106,26 @@ class PtySession:
 
     def _handle_cd(self, args: list[str]) -> CommandResult:
         target = args[1] if len(args) > 1 else str(Path.home())
-        # Resolve relative paths against current cwd
+        # Expand ~ before any path resolution
+        target = os.path.expanduser(target)
         new_path = Path(self.cwd) / target if not Path(target).is_absolute() else Path(target)
         try:
             resolved = new_path.resolve(strict=True)
+            if not resolved.is_dir():
+                return CommandResult(
+                    args=args,
+                    stdout="",
+                    stderr=f"cd: {args[1] if len(args) > 1 else target}: Not a directory",
+                    exit_code=1,
+                    cwd=self.cwd,
+                )
             self.cwd = str(resolved)
             return CommandResult(args=args, stdout="", stderr="", exit_code=0, cwd=self.cwd)
         except FileNotFoundError:
             return CommandResult(
                 args=args,
                 stdout="",
-                stderr=f"cd: {target}: No such file or directory",
+                stderr=f"cd: {args[1] if len(args) > 1 else target}: No such file or directory",
                 exit_code=1,
                 cwd=self.cwd,
             )

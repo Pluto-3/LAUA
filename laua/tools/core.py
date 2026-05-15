@@ -50,7 +50,7 @@ async def _get_system_info(
     include: list[str] | None = None,
     own_pids: list[int] | None = None,
 ) -> dict[str, Any]:
-    include_set = set(include or ["cpu", "memory", "disk", "processes"])
+    include_set = set(include if include is not None else ["cpu", "memory", "disk", "processes"])
     own_pids_set = set(own_pids or [os.getpid()])
     info: dict[str, Any] = {}
 

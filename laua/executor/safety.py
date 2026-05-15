@@ -7,8 +7,8 @@ from dataclasses import dataclass
 
 # Patterns that are unconditionally blocked (§2.3)
 _BLOCKED_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"rm\s+-[a-zA-Z]*r[a-zA-Z]*f?\s+/\s*\*?$"),   # rm -rf / or rm -rf /*
-    re.compile(r"rm\s+-[a-zA-Z]*f[a-zA-Z]*r?\s+/\s*\*?$"),
+    re.compile(r"rm\s+-[a-zA-Z]*r[a-zA-Z]*f?\s+/+\s*\*?$"),   # rm -rf / or rm -rf /* or rm -rf //
+    re.compile(r"rm\s+-[a-zA-Z]*f[a-zA-Z]*r?\s+/+\s*\*?$"),
     re.compile(r"mkfs\."),
     re.compile(r"dd\s+.*of=/dev/sd"),
     re.compile(r":\s*\(\s*\)\s*\{"),                            # fork bomb
@@ -58,7 +58,7 @@ def check_command(args: list[str]) -> SafetyVerdict:
                 reason=f"Blocked by safety pattern: {pattern.pattern}",
             )
 
-    needs_sudo = args[0] == "sudo" or any(flat.find(p) != -1 for p in SUDO_PATHS)
+    needs_sudo = bool(args) and args[0] == "sudo" or any(flat.find(p) != -1 for p in SUDO_PATHS)
     needs_confirm = needs_sudo or any(p.search(flat) for p in _CONFIRM_PATTERNS)
 
     return SafetyVerdict(
