@@ -45,10 +45,8 @@ async def _list_directory(
     files: list[str] = []
     dirs: list[str] = []
     for entry in entries:
-        if pattern and not entry.name.startswith(pattern.lstrip("*").rstrip("*")):
-            # Simple pattern: check glob match
-            if not entry.match(pattern):
-                continue
+        if pattern and not entry.match(pattern):
+            continue
         if entry.is_dir():
             dirs.append(entry.name)
         else:
