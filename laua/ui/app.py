@@ -176,7 +176,7 @@ class LauaApp(App):
         inp = self.query_one("#prompt", Input)
         inp.placeholder = "y to confirm, anything else to cancel"
 
-        self._pending_confirm = asyncio.get_event_loop().create_future()
+        self._pending_confirm = asyncio.get_running_loop().create_future()
         response = await self._pending_confirm
         self._pending_confirm = None
 

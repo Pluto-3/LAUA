@@ -211,13 +211,12 @@ async def test_write_file_creates_nested_dirs(tmp_path):
 
 @pytest.mark.asyncio
 async def test_search_files_max_results_zero():
-    """max_results=0 returns empty matches but truncated=True is a false positive."""
+    """max_results=0 returns empty matches with truncated=False (not a truncation)."""
     with tempfile.TemporaryDirectory() as d:
         (Path(d) / "a.txt").write_text("")
         result = await _search_files(d, max_results=0)
         assert result["count"] == 0
-        # Document current behaviour: truncated=True even though nothing was returned
-        assert result["truncated"] is True
+        assert result["truncated"] is False
 
 
 @pytest.mark.asyncio

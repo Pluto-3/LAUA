@@ -137,7 +137,8 @@ async def _search_files(
         if len(matches) >= max_results:
             break
 
-    return {"matches": matches, "count": len(matches), "truncated": len(matches) >= max_results}
+    truncated = max_results > 0 and len(matches) == max_results
+    return {"matches": matches, "count": len(matches), "truncated": truncated}
 
 
 async def _delete_file(
