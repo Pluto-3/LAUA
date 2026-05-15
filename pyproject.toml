@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "laua"
+version = "0.1.0"
+description = "Local Autonomous Utility Agent"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.29",
+    "textual>=0.61",
+    "rich>=13.7",
+    "psutil>=5.9",
+    "docker>=7.0",
+    "httpx>=0.27",
+    "jsonschema>=4.22",
+    "pyyaml>=6.0",
+    "aiosqlite>=0.20",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+laua = "laua.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["laua*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

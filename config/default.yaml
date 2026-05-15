@@ -1,0 +1,47 @@
+ollama:
+  base_url: "http://localhost:11434"
+  default_model: "qwen2.5:7b"
+  request_timeout: 120
+  health_check_interval: 10
+
+executor:
+  command_timeout: 30
+  max_agent_steps: 10
+  dry_run: false
+
+monitor:
+  refresh_interval: 5
+  cpu_alert_threshold: 90
+  disk_alert_threshold: 90
+  memory_alert_threshold: 90
+
+memory:
+  db_path: "~/.laua/laua.db"
+  max_history_tokens: 4096
+  context_window_trigger: 0.80
+
+permissions:
+  restricted_paths:
+    - /etc
+    - /var
+    - /usr
+    - /boot
+    - /sys
+    - /proc
+  require_confirmation:
+    - delete
+    - overwrite
+    - kill
+    - stop_service
+    - install
+    - remove_package
+    - docker_container_stop
+    - docker_container_remove
+    - sudo
+
+audit:
+  log_path: "~/.laua/audit.db"
+
+ui:
+  streaming: true
+  show_plan: true
