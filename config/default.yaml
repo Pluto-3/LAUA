@@ -14,6 +14,8 @@ monitor:
   cpu_alert_threshold: 90
   disk_alert_threshold: 90
   memory_alert_threshold: 90
+  gpu_enabled: true
+  thermal_enabled: true
 
 memory:
   db_path: "~/.laua/laua.db"
@@ -41,6 +43,16 @@ permissions:
 
 audit:
   log_path: "~/.laua/audit.db"
+
+model_routing:
+  fast: "qwen2.5:7b"
+  reasoning: "qwen2.5:7b"
+  coding: "qwen2.5:7b"
+  fallback: "qwen2.5:7b"
+
+file_manager:
+  max_search_results: 50
+  max_write_bytes: 10485760
 
 ui:
   streaming: true

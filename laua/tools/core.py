@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Any
@@ -55,7 +56,10 @@ async def _get_system_info(
     info: dict[str, Any] = {}
 
     if "cpu" in include_set:
-        info["cpu_percent"] = psutil.cpu_percent(interval=1)
+        loop = asyncio.get_event_loop()
+        info["cpu_percent"] = await loop.run_in_executor(
+            None, lambda: psutil.cpu_percent(interval=1)
+        )
         info["cpu_count"] = psutil.cpu_count()
 
     if "memory" in include_set:
@@ -126,6 +130,7 @@ def register_core_tools(
                 "timeout": {"type": "integer", "default": 30, "description": "Timeout in seconds."},
             },
             "required": ["args"],
+            "additionalProperties": False,
         },
         handler=lambda args, timeout=30: _run_command(args, session, confirm_fn, audit_fn, timeout),
     ))
@@ -142,6 +147,7 @@ def register_core_tools(
                     "description": "Subset of metrics to include. Defaults to all.",
                 },
             },
+            "additionalProperties": False,
         },
         handler=lambda include=None: _get_system_info(include=include, own_pids=own_pids),
     ))
@@ -156,6 +162,7 @@ def register_core_tools(
                 "max_bytes": {"type": "integer", "default": 65536},
             },
             "required": ["path"],
+            "additionalProperties": False,
         },
         handler=_read_file,
     ))
