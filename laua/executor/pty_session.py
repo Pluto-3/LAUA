@@ -3,13 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import logging
 import os
-import pty
-import struct
-import termios
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -55,8 +51,6 @@ class PtySession:
 
         proc_env = {**os.environ, **(env or {}), "PWD": self.cwd}
 
-        stdout_buf: list[bytes] = []
-        stderr_buf: list[bytes] = []
 
         try:
             proc = await asyncio.create_subprocess_exec(

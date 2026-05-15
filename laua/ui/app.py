@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 from rich.text import Text
 from textual.app import App, ComposeResult
@@ -91,7 +90,9 @@ class LauaApp(App):
 
         for step in result.steps:
             if step.error:
-                log.write(Text(f"[Step {step.step}] {step.tool_name} error: {step.error}", style="red"))
+                log.write(Text(
+                    f"[Step {step.step}] {step.tool_name} error: {step.error}", style="red"
+                ))
             else:
                 log.write(Text(f"[Step {step.step}] {step.tool_name}", style="dim"))
                 if isinstance(step.result, dict):

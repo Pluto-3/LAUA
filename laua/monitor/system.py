@@ -30,7 +30,9 @@ def _get_ollama_pids() -> set[int]:
         import docker
         client = docker.from_env()
         for container in client.containers.list():
-            if "ollama" in container.name.lower() or "ollama" in container.image.tags[0].lower() if container.image.tags else False:
+            name_match = "ollama" in container.name.lower()
+            tag_match = bool(container.image.tags) and "ollama" in container.image.tags[0].lower()
+            if name_match or tag_match:
                 top = container.top()
                 for proc in top.get("Processes", []):
                     try:

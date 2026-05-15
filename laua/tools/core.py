@@ -99,7 +99,7 @@ async def _read_file(path: str, max_bytes: int = 65536) -> dict[str, Any]:
         return {"error": f"Not a file: {p}"}
     try:
         content = p.read_bytes()[:max_bytes]
-        return {"path": str(p), "content": content.decode(errors="replace"), "truncated": len(content) == max_bytes}
+        return {"path": str(p), "content": content.decode(errors="replace"), "truncated": len(content) == max_bytes}  # noqa: E501
     except PermissionError:
         return {"error": f"Permission denied: {p}"}
 
@@ -113,14 +113,14 @@ def register_core_tools(
 ) -> None:
     registry.register(Tool(
         name="run_command",
-        description="Execute a shell command via argument array. Returns stdout, stderr, and exit code.",
+        description="Execute a shell command via an argument array. Returns stdout, stderr, and exit code.",  # noqa: E501
         parameters_schema={
             "type": "object",
             "properties": {
                 "args": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Command and arguments as a list. Example: ['ls', '-la', '/tmp']",
+                    "description": "Command and arguments as a list, e.g. ['ls', '-la', '/tmp']",
                     "minItems": 1,
                 },
                 "timeout": {"type": "integer", "default": 30, "description": "Timeout in seconds."},

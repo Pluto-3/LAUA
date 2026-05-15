@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator
+from typing import Any
 
 from laua.ollama_client import OllamaClient, OllamaUnavailableError
 from laua.tools.registry import ToolRegistry
@@ -94,18 +94,20 @@ class Orchestrator:
 
                 try:
                     tool_result = await self._registry.dispatch(tool_name, arguments)
-                    step_result = StepResult(step=step, tool_name=tool_name, arguments=arguments, result=tool_result)
+                    step_result = StepResult(
+                        step=step, tool_name=tool_name, arguments=arguments, result=tool_result
+                    )
                 except Exception as exc:
                     step_result = StepResult(
-                        step=step, tool_name=tool_name, arguments=arguments, result=None, error=str(exc)
+                        step=step, tool_name=tool_name,
+                        arguments=arguments, result=None, error=str(exc),
                     )
                     logger.warning("Tool %s failed: %s", tool_name, exc)
 
                 result.steps.append(step_result)
-                messages.append({
-                    "role": "tool",
-                    "content": json.dumps(step_result.result if step_result.error is None else {"error": step_result.error}),
-                })
+                err = step_result.error
+                tool_content = step_result.result if err is None else {"error": err}
+                messages.append({"role": "tool", "content": json.dumps(tool_content)})
         else:
             result.hit_step_ceiling = True
             result.final_response = (
