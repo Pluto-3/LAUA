@@ -24,14 +24,15 @@ def load_config(user_config_path: Path | None = None) -> dict[str, Any]:
     with default_path.open() as f:
         config = yaml.safe_load(f)
 
+    env_cfg = os.environ.get("LAUA_CONFIG")
     search_paths = [
         user_config_path,
-        Path(os.environ.get("LAUA_CONFIG", "")),
+        Path(env_cfg) if env_cfg else None,
         Path.home() / ".laua" / "config.yaml",
         Path("laua.yaml"),
     ]
     for path in search_paths:
-        if path and path.exists():
+        if path and path.is_file():
             with path.open() as f:
                 user_cfg = yaml.safe_load(f) or {}
             config = _deep_merge(config, user_cfg)

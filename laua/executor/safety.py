@@ -20,6 +20,12 @@ _BLOCKED_PATTERNS: list[re.Pattern[str]] = [
 # Sudo-required path prefixes (§2.2)
 SUDO_PATHS = ("/etc/", "/var/", "/usr/", "/boot/", "/sys/", "/proc/")
 
+# Read-only verbs exempt from path-based confirmation — they can't modify state
+_READONLY_VERBS = frozenset([
+    "cat", "head", "tail", "ls", "grep", "wc", "stat",
+    "file", "strings", "less", "more", "find", "du", "df",
+])
+
 # Confirmation-required command verbs / patterns
 _CONFIRM_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\brm\b"),
@@ -58,7 +64,16 @@ def check_command(args: list[str]) -> SafetyVerdict:
                 reason=f"Blocked by safety pattern: {pattern.pattern}",
             )
 
-    needs_sudo = bool(args) and args[0] == "sudo" or any(flat.find(p) != -1 for p in SUDO_PATHS)
+    # Read-only commands on virtual kernel filesystems (/proc, /sys) are safe
+    is_readonly_kernel_fs = (
+        bool(args)
+        and args[0] in _READONLY_VERBS
+        and any(a.startswith(("/proc/", "/sys/")) for a in args[1:])
+        and not any(a.startswith(("/etc/", "/var/", "/usr/", "/boot/")) for a in args[1:])
+    )
+    needs_sudo = (bool(args) and args[0] == "sudo") or (
+        not is_readonly_kernel_fs and any(flat.find(p) != -1 for p in SUDO_PATHS)
+    )
     needs_confirm = needs_sudo or any(p.search(flat) for p in _CONFIRM_PATTERNS)
 
     return SafetyVerdict(

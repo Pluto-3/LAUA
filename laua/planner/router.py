@@ -14,6 +14,15 @@ TASK_KEYWORDS: dict[str, list[str]] = {
     "reasoning": [
         "why", "explain", "analyze", "reason", "think", "compare",
         "should i", "what if", "pros", "cons",
+        # Network/system analysis needs a capable model — 0.8b hallucinates on complex output
+        "network", "net ", "net info", "interface", "wifi", "internet", "connection",
+        "my ip", "ip addr", "ip route", "ipv4", "ipv6",
+        "port", "firewall", "netstat", "socket", "dns", "ping", "traceroute",
+        "docker", "container", "logs", "journal", "service",
+    ],
+    "contextual": [
+        "detailed", "more details", "more info", "specifically",
+        "elaborate", "expand on", "breakdown", "list them", "which ones",
     ],
 }
 

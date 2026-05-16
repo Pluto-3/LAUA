@@ -1,7 +1,7 @@
 ollama:
   base_url: "http://localhost:11434"
-  default_model: "qwen2.5:7b"
-  request_timeout: 120
+  default_model: "qwen3.5:4b"
+  request_timeout: 60
   health_check_interval: 10
 
 executor:
@@ -45,10 +45,11 @@ audit:
   log_path: "~/.laua/audit.db"
 
 model_routing:
-  fast: "qwen2.5:7b"
-  reasoning: "qwen2.5:7b"
-  coding: "qwen2.5:7b"
-  fallback: "qwen2.5:7b"
+  fast: "llama3.2:3b"
+  contextual: "qwen3.5:4b"
+  reasoning: "qwen3.5:4b"
+  coding: "qwen3.5:4b"
+  fallback: "qwen3.5:2b"
 
 file_manager:
   max_search_results: 50
