@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
 import httpx
 
@@ -59,6 +59,42 @@ class OllamaClient:
             return resp.json()
         except httpx.HTTPError as exc:
             raise OllamaUnavailableError(f"Ollama request failed: {exc}") from exc
+
+    async def chat_with_tools_stream(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        on_token: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
+        """Streaming chat with tools. Calls on_token for text tokens; returns full response dict."""
+        payload = {"model": model, "messages": messages, "tools": tools, "stream": True}
+        accumulated_content = ""
+        accumulated_tool_calls: list | None = None
+        try:
+            async with self._client.stream(
+                "POST", f"{self.base_url}/api/chat", json=payload, timeout=self._timeout
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.strip():
+                        continue
+                    data = json.loads(line)
+                    msg = data.get("message", {})
+                    if content := msg.get("content"):
+                        accumulated_content += content
+                        if on_token is not None:
+                            on_token(content)
+                    if tool_calls := msg.get("tool_calls"):
+                        accumulated_tool_calls = tool_calls
+                    if data.get("done"):
+                        break
+        except httpx.HTTPError as exc:
+            raise OllamaUnavailableError(f"Ollama stream failed: {exc}") from exc
+        message: dict[str, Any] = {"role": "assistant", "content": accumulated_content}
+        if accumulated_tool_calls:
+            message["tool_calls"] = accumulated_tool_calls
+        return {"message": message}
 
     async def chat_stream(
         self,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -47,10 +48,30 @@ async def _run_command(
     }
 
 
+_CATEGORY_ALIASES: dict[str, str] = {
+    "ram": "memory", "mem": "memory", "memory.total": "memory", "memory.used": "memory",
+    "cpu": "cpu", "processor": "cpu", "cpu_percent": "cpu",
+    "hdd": "disk", "ssd": "disk", "storage": "disk", "space": "disk",
+    "procs": "processes", "proc": "processes", "tasks": "processes", "process": "processes",
+    "boot": "uptime", "boot time": "uptime",
+}
+_VALID_CATEGORIES = {"cpu", "memory", "disk", "processes", "uptime"}
+
+
 async def _get_system_info(
-    include: list[str] | None = None,
+    include: list[str] | str | None = None,
     own_pids: list[int] | None = None,
 ) -> dict[str, Any]:
+    if isinstance(include, str):
+        include = [s.strip() for s in include.split(",")]
+    if include is not None:
+        normalized = []
+        for item in include:
+            key = item.lower().strip()
+            canonical = _CATEGORY_ALIASES.get(key, key)
+            if canonical in _VALID_CATEGORIES:
+                normalized.append(canonical)
+        include = normalized  # may be empty; that's intentional (caller passed all-invalid items)
     include_set = set(include if include is not None else ["cpu", "memory", "disk", "processes"])
     own_pids_set = set(own_pids or [os.getpid()])
     info: dict[str, Any] = {}
@@ -78,6 +99,20 @@ async def _get_system_info(
             "free_gb": round(disk.free / 1e9, 2),
             "percent": disk.percent,
         }
+
+    if "uptime" in include_set:
+        boot_ts = psutil.boot_time()
+        uptime_s = int(time.time() - boot_ts)
+        days, rem = divmod(uptime_s, 86400)
+        hours, rem = divmod(rem, 3600)
+        minutes = rem // 60
+        parts = []
+        if days:
+            parts.append(f"{days}d")
+        if hours:
+            parts.append(f"{hours}h")
+        parts.append(f"{minutes}m")
+        info["uptime"] = {"seconds": uptime_s, "human": " ".join(parts)}
 
     if "processes" in include_set:
         procs = []
@@ -137,14 +172,20 @@ def register_core_tools(
 
     registry.register(Tool(
         name="get_system_info",
-        description="Get current system resource usage: CPU, memory, disk, and top processes.",
+        description=(
+            "Get current system resource usage: CPU, memory, disk, top processes, uptime. "
+            "Pass include as an array e.g. [\"cpu\", \"uptime\"] or omit for all. "
+            "Valid categories: cpu, memory, disk, processes, uptime."
+        ),
         parameters_schema={
             "type": "object",
             "properties": {
                 "include": {
-                    "type": "array",
-                    "items": {"type": "string", "enum": ["cpu", "memory", "disk", "processes"]},
-                    "description": "Subset of metrics to include. Defaults to all.",
+                    "description": "Categories to include. Array or single string.",
+                    "anyOf": [
+                        {"type": "array", "items": {"type": "string"}},
+                        {"type": "string"},
+                    ],
                 },
             },
             "additionalProperties": False,

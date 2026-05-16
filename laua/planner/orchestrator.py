@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from laua.ollama_client import OllamaClient, OllamaUnavailableError
 from laua.tools.registry import ToolRegistry
@@ -13,17 +13,49 @@ from laua.tools.registry import ToolRegistry
 logger = logging.getLogger(__name__)
 
 MAX_AGENT_STEPS = 10
+
+
+def _coerce_args(args: dict) -> dict:
+    """Parse JSON-string values that some models pass instead of native JSON types."""
+    result = {}
+    for k, v in args.items():
+        if isinstance(v, str):
+            try:
+                result[k] = json.loads(v)
+            except (json.JSONDecodeError, ValueError):
+                result[k] = v
+        else:
+            result[k] = v
+    return result
 _MAX_MODEL_FAILURES = 2
 
-_SYSTEM_PROMPT = """You are LAUA, a Local Autonomous Utility Agent running on Ubuntu Linux.
-You help the user manage their system through natural language.
+_SYSTEM_PROMPT = """You are LAUA — a local system management agent for Ubuntu Linux. You are not a coding assistant, teacher, or documentation writer.
 
-Rules you must follow:
-- Always use the provided tools to act. Never output raw shell commands as text.
-- Output valid JSON tool calls only — never free-form shell strings.
-- If you need to run multiple commands, do them one at a time using run_command.
-- If a task is ambiguous, ask for clarification before acting.
-- Before destructive actions, explain what you're about to do.
+RESPONSE FORMAT (strictly enforced):
+- 1 to 4 plain sentences. No more.
+- No code blocks, no markdown headers, no bullet lists unless listing 3+ distinct items.
+- No preamble ("Sure!", "Let me...", "Of course"). Get to the point.
+- Never suggest commands for the user to run. Execute them yourself with tools.
+- Never fabricate data. Report only what tools return.
+
+CONVERSATIONAL INPUT (greetings, "how are you", "what can you do", small talk):
+- Reply in plain text. Do NOT call any tool.
+
+LINGO MAP — one tool call, no extra steps:
+- "sys stats" / "check sys" / "stats" → get_system_info (omit include for all)
+- "uptime" / "how long" / "boot time" → get_system_info(include=["uptime"])
+- "ram" / "memory" / "mem" → get_system_info(include=["memory"])
+- "cpu" / "processor" → get_system_info(include=["cpu"])
+- "disk" / "storage" / "space" → get_system_info(include=["disk"])
+- "procs" / "processes" / "what's running" → get_system_info(include=["processes"])
+- "check temps" / "how hot" → run_command(["cat", "/sys/class/thermal/thermal_zone0/temp"])
+- "net info" / "my ip" / "network" → run_command(["ip", "-brief", "addr", "show"])
+- "check X" → use the most direct tool to inspect X
+
+TOOL RULES:
+- One tool call per step. Wait for results before calling again.
+- Before any destructive action (delete, stop, kill), state exactly what you will do first.
+- If a tool returns an error, report it and stop. Do not retry blindly.
 """
 
 
@@ -77,7 +109,12 @@ class Orchestrator:
             return fallback
         return model
 
-    async def run(self, user_request: str) -> OrchestratorResult:
+    async def run(
+        self,
+        user_request: str,
+        on_step: Callable[[StepResult], None] | None = None,
+        on_token: Callable[[str], None] | None = None,
+    ) -> OrchestratorResult:
         result = OrchestratorResult()
         active_model = self._pick_model(user_request)
         result.model_used = active_model
@@ -95,10 +132,11 @@ class Orchestrator:
                 messages = self._context_manager.compress(messages)
 
             try:
-                response = await self._ollama.chat_with_tools(
+                response = await self._ollama.chat_with_tools_stream(
                     model=active_model,
                     messages=messages,
                     tools=tools,
+                    on_token=on_token,
                 )
             except OllamaUnavailableError as exc:
                 result.error = str(exc)
@@ -124,6 +162,7 @@ class Orchestrator:
                 tool_name = fn.get("name", "")
                 raw_args = fn.get("arguments", {})
                 arguments = raw_args if isinstance(raw_args, dict) else json.loads(raw_args)
+                arguments = _coerce_args(arguments)
 
                 try:
                     tool_result = await self._registry.dispatch(tool_name, arguments)
@@ -138,6 +177,8 @@ class Orchestrator:
                     logger.warning("Tool %s failed: %s", tool_name, exc)
 
                 result.steps.append(step_result)
+                if on_step is not None:
+                    on_step(step_result)
                 err = step_result.error
                 tool_content = step_result.result if err is None else {"error": err}
                 messages.append({"role": "tool", "content": json.dumps(tool_content)})
