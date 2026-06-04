@@ -184,6 +184,15 @@ class LauaApp(App):
             prior_history: list = []
         else:
             prior_history = await self._memory.get_history(self._session_id)
+            # Don't resume a context-heavy session — start fresh to avoid silent failures
+            _ctx_check = ContextManager(
+                model_max_tokens=mem_cfg.get("max_history_tokens", 4096),
+                trigger_ratio=0.40,
+            )
+            if _ctx_check.should_compress(prior_history):
+                await self._memory.end_session(self._session_id)
+                self._session_id = await self._memory.create_session()
+                prior_history = []
 
         context_mgr = ContextManager(
             model_max_tokens=mem_cfg.get("max_history_tokens", 4096),
@@ -286,7 +295,10 @@ class LauaApp(App):
         parts = [f"model: {self._current_model}"]
         ctx = self._ctx_pct()
         if ctx > 0:
-            parts.append(f"ctx {ctx}%")
+            ctx_str = f"ctx {ctx}%"
+            if ctx >= 50:
+                ctx_str += " ⚠ /reset to clear"
+            parts.append(ctx_str)
         if self._shell_active:
             parts.append(self._cwd_display())
         parts.append("^q quit")
@@ -344,6 +356,19 @@ class LauaApp(App):
 
         if prompt == "/clear":
             await log.query("Static").remove()
+            return
+
+        if prompt == "/reset":
+            await log.query("Static").remove()
+            assert self._orchestrator is not None
+            self._orchestrator._history.clear()
+            if self._session_id is not None:
+                await self._memory.end_session(self._session_id)
+            self._session_id = await self._memory.create_session()
+            self._shell_active = False
+            self._set_status_idle()
+            await log.mount(Static("Session reset — history cleared.", classes="dim-msg"))
+            log.scroll_end(animate=False)
             return
 
         if prompt == "/workflows":
@@ -441,6 +466,10 @@ class LauaApp(App):
             log.scroll_end(animate=False)
         elif result.error:
             await log.mount(Static(f"Error: {result.error}", classes="error-msg"))
+            log.scroll_end(animate=False)
+        elif self._stream_widget and self._stream_widget_mounted and result.final_response:
+            # Streamed content was displayed raw — replace with the stripped final response
+            self._stream_widget.update(result.final_response)
             log.scroll_end(animate=False)
         elif not self._stream_widget and result.final_response:
             await log.mount(Static(result.final_response, classes="response"))

@@ -82,6 +82,18 @@ async def _list_containers(include_stopped: bool = False) -> list[dict[str, Any]
     return await loop.run_in_executor(None, _fetch)
 
 
+def _resolve_container(client: Any, container_id: str) -> Any:
+    """Return a container by exact id/name, falling back to substring match."""
+    try:
+        return client.containers.get(container_id)
+    except Exception:
+        all_containers = client.containers.list(all=True)
+        matches = [c for c in all_containers if container_id.lower() in c.name.lower()]
+        if not matches:
+            raise ValueError(f"No container matching '{container_id}'")
+        return matches[0]
+
+
 async def _get_container_logs(container_id: str, lines: int = 50) -> dict[str, Any]:
     loop = asyncio.get_event_loop()
     try:
@@ -92,7 +104,7 @@ async def _get_container_logs(container_id: str, lines: int = 50) -> dict[str, A
 
     def _fetch() -> dict[str, Any]:
         try:
-            container = client.containers.get(container_id)
+            container = _resolve_container(client, container_id)
             logs = container.logs(tail=lines, stream=False)
             return {"container": container.name, "logs": logs.decode(errors="replace")}
         except Exception as exc:
@@ -115,7 +127,7 @@ async def _start_container(container_id: str, confirm_fn: Callable) -> dict[str,
 
     def _do() -> dict[str, Any]:
         try:
-            container = client.containers.get(container_id)
+            container = _resolve_container(client, container_id)
             container.start()
             return {"status": "started", "container": container.name}
         except Exception as exc:
@@ -133,7 +145,7 @@ async def _stop_container(container_id: str, confirm_fn: Callable) -> dict[str, 
         return {"error": f"Docker unavailable: {exc}"}
 
     def _get_container() -> Any:
-        return client.containers.get(container_id)
+        return _resolve_container(client, container_id)
 
     try:
         container = await loop.run_in_executor(None, _get_container)
@@ -177,7 +189,7 @@ async def _restart_container(container_id: str, confirm_fn: Callable) -> dict[st
 
     def _do() -> dict[str, Any]:
         try:
-            container = client.containers.get(container_id)
+            container = _resolve_container(client, container_id)
             container.restart()
             return {"status": "restarted", "container": container.name}
         except Exception as exc:

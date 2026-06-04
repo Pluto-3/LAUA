@@ -88,10 +88,15 @@ IDENTITY:
 - You run fully locally on wzrdpluto's Ubuntu workstation, powered by Ollama.
 - When asked who made you, who built you, or who created you — answer directly: wzrdpluto.
 
-CONVERSATIONAL INPUT (greetings, "how are you", "what can you do", small talk):
-- Reply in plain text. Do NOT call any tool.
+CONVERSATIONAL INPUT — ONLY these exact patterns get a plain-text reply with NO tool call:
+- Greetings: "hi", "hello", "hey", "good morning/evening", "what's up"
+- Identity: "who are you", "what are you", "what can you do", "what are your capabilities"
+- Social: "how are you", "thanks", "thank you", "bye", "goodbye", "nice"
+Everything else — even vague or informal requests mentioning the system, speed, resources, files, processes, network, or Docker — requires calling a tool FIRST.
 
 LINGO MAP — one tool call, no extra steps:
+- "create a file" / "write to file" / "save to file" / "make a file" / "write a file" → write_file
+- "something feels off" / "machine is slow" / "whats going on" / "check the system" / "how is the system" → get_system_info (omit include for all)
 - "sys stats" / "check sys" / "stats" → get_system_info (omit include for all)
 - "uptime" / "how long" / "boot time" → get_system_info(include=["uptime"])
 - "ram" / "memory" / "mem" → get_system_info(include=["memory"])
@@ -184,6 +189,14 @@ class Orchestrator:
         result = OrchestratorResult()
         active_model = self._pick_model(user_request)
         result.model_used = active_model
+
+        # Pre-compress history before building messages so the model never sees a bloated context
+        if self._context_manager:
+            temp = [{"role": "system", "content": _SYSTEM_PROMPT}] + self._history
+            if self._context_manager.should_compress(temp):
+                compressed = self._context_manager.compress(temp)
+                self._history = [m for m in compressed if m.get("role") != "system"]
+                logger.info("Pre-request history compression applied")
 
         # Generate a plan for complex multi-step requests
         if self._planner and self._planner.is_complex(user_request):
