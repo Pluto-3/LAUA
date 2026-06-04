@@ -85,6 +85,15 @@ class LauaApp(App):
     .dim-msg {
         color: $text-muted;
     }
+    .banner {
+        color: $accent;
+        text-style: bold;
+        margin-bottom: 1;
+    }
+    .banner-sub {
+        color: $text-muted;
+        margin-bottom: 1;
+    }
     Input {
         dock: bottom;
         border: none;
@@ -170,6 +179,7 @@ class LauaApp(App):
         )
         register_file_tools(
             self._tools, confirm_fn=self._confirm,
+            audit_fn=self._audit.record,
             restricted_paths=restricted,
             max_search_results=fm_cfg.get("max_search_results", 50),
             max_write_bytes=fm_cfg.get("max_write_bytes", 10 * 1024 * 1024),
@@ -186,19 +196,34 @@ class LauaApp(App):
         )
 
         log = self.query_one("#log", _LogPane)
-        if prior_history:
-            await log.mount(Static(f"Resumed session #{self._session_id}.", classes="dim-msg"))
 
-        healthy = await self._ollama.health_check()
-        if healthy:
-            await log.mount(Static("Ollama is reachable.", classes="dim-msg"))
+        if not prior_history:
+            await log.mount(Static(
+                "LAUA  ·  Local Autonomous Utility Agent  ·  v0.1.0",
+                classes="banner",
+            ))
+            await log.mount(Static(
+                f"Created by wzrdpluto  ·  AI infrastructure & automation engineer  ·  github.com/Pluto-3",
+                classes="banner-sub",
+            ))
+            await log.mount(Static(
+                f"Manage your Ubuntu workstation in plain language — "
+                f"system stats, commands, Docker, files. Just ask.  "
+                f"·  Model: {self._current_model}  ·  ctrl+q to quit",
+                classes="dim-msg",
+            ))
         else:
             await log.mount(Static(
-                f"Warning: Ollama not reachable at {self._cfg['ollama']['base_url']}. "
-                "Check that the Docker container is running.",
+                f"LAUA  ·  Resumed session #{self._session_id}  ·  {self._current_model}",
+                classes="banner",
+            ))
+
+        healthy = await self._ollama.health_check()
+        if not healthy:
+            await log.mount(Static(
+                f"Warning: Ollama not reachable at {self._cfg['ollama']['base_url']}.",
                 classes="warn-msg",
             ))
-        await log.mount(Static("Ready. Type a request and press Enter.", classes="dim-msg"))
         self._set_status_idle()
         self.query_one("#prompt", _PromptInput).focus()
 
@@ -307,6 +332,7 @@ class LauaApp(App):
             result = await self._orchestrator.run(
                 prompt,
                 on_step=self._on_step,
+                on_step_start=self._on_step_start,
                 on_token=self._on_token,
             )
         except Exception as exc:
@@ -340,6 +366,11 @@ class LauaApp(App):
         self._stream_widget_mounted = False
         inp.disabled = False
         inp.focus()
+
+    def _on_step_start(self, tool_name: str, step: int) -> None:
+        self._think_tool = tool_name
+        self._think_step = step
+        self._step_start = time.monotonic()
 
     def _on_step(self, step: StepResult) -> None:
         self._think_step = step.step

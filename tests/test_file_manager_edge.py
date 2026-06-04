@@ -27,6 +27,10 @@ async def _no(*a, **kw) -> bool:
     return False
 
 
+async def _audit_noop(*a, **kw) -> None:
+    pass
+
+
 # ── _is_restricted: edge cases ────────────────────────────────────────────────
 
 def test_is_restricted_exact_path_match():
@@ -132,7 +136,7 @@ async def test_list_directory_sorted_output(tmp_path):
 @pytest.mark.asyncio
 async def test_write_file_empty_content(tmp_path):
     path = str(tmp_path / "empty.txt")
-    result = await _write_file(path, "", _yes, _NO_RESTRICTED, 1024)
+    result = await _write_file(path, "", _yes, _audit_noop, _NO_RESTRICTED, 1024)
     assert result["status"] == "written"
     assert result["bytes"] == 0
     assert Path(path).read_text() == ""
@@ -142,7 +146,7 @@ async def test_write_file_empty_content(tmp_path):
 async def test_write_file_unicode_content(tmp_path):
     path = str(tmp_path / "unicode.txt")
     content = "こんにちは 🎉"
-    result = await _write_file(path, content, _yes, _NO_RESTRICTED, 65536)
+    result = await _write_file(path, content, _yes, _audit_noop, _NO_RESTRICTED, 65536)
     assert result["status"] == "written"
     assert Path(path).read_text(encoding="utf-8") == content
 
@@ -150,7 +154,7 @@ async def test_write_file_unicode_content(tmp_path):
 @pytest.mark.asyncio
 async def test_write_file_to_directory_path_returns_error(tmp_path):
     """Passing a directory as the target path should return an error, not crash."""
-    result = await _write_file(str(tmp_path), "content", _yes, _NO_RESTRICTED, 65536)
+    result = await _write_file(str(tmp_path), "content", _yes, _audit_noop, _NO_RESTRICTED, 65536)
     assert "error" in result
 
 
@@ -159,7 +163,7 @@ async def test_write_file_max_bytes_exact_passes(tmp_path):
     """Content of exactly max_write_bytes should succeed (not exceed check)."""
     path = str(tmp_path / "exact.txt")
     content = "a" * 100
-    result = await _write_file(path, content, _yes, _NO_RESTRICTED, 100)
+    result = await _write_file(path, content, _yes, _audit_noop, _NO_RESTRICTED, 100)
     assert result["status"] == "written"
 
 
@@ -167,7 +171,7 @@ async def test_write_file_max_bytes_exact_passes(tmp_path):
 async def test_write_file_max_bytes_one_over_fails(tmp_path):
     path = str(tmp_path / "toobig.txt")
     content = "a" * 101
-    result = await _write_file(path, content, _yes, _NO_RESTRICTED, 100)
+    result = await _write_file(path, content, _yes, _audit_noop, _NO_RESTRICTED, 100)
     assert "error" in result
 
 
@@ -181,7 +185,7 @@ async def test_write_file_no_confirm_for_new_file(tmp_path):
         return True
 
     path = str(tmp_path / "new.txt")
-    await _write_file(path, "hi", tracking_confirm, _NO_RESTRICTED, 1024)
+    await _write_file(path, "hi", tracking_confirm, _audit_noop, _NO_RESTRICTED, 1024)
     assert calls == [], "New file creation should not ask for confirmation"
 
 
@@ -196,14 +200,14 @@ async def test_write_file_confirm_called_for_overwrite(tmp_path):
 
     path = tmp_path / "existing.txt"
     path.write_text("old")
-    await _write_file(str(path), "new", tracking_confirm, _NO_RESTRICTED, 1024)
+    await _write_file(str(path), "new", tracking_confirm, _audit_noop, _NO_RESTRICTED, 1024)
     assert len(calls) == 1
 
 
 @pytest.mark.asyncio
 async def test_write_file_creates_nested_dirs(tmp_path):
     path = str(tmp_path / "a" / "b" / "c" / "file.txt")
-    result = await _write_file(path, "deep", _yes, _NO_RESTRICTED, 1024)
+    result = await _write_file(path, "deep", _yes, _audit_noop, _NO_RESTRICTED, 1024)
     assert result["status"] == "written"
 
 
@@ -298,7 +302,7 @@ async def test_delete_symlink_removes_link_not_target(tmp_path):
     link = tmp_path / "link.txt"
     link.symlink_to(target)
 
-    result = await _delete_file(str(link), _yes, _NO_RESTRICTED)
+    result = await _delete_file(str(link), _yes, _audit_noop, _NO_RESTRICTED)
     assert result["status"] == "deleted"
     assert not link.exists()
     assert target.exists(), "Target file must survive symlink deletion"
@@ -315,7 +319,7 @@ async def test_delete_file_confirm_receives_full_path(tmp_path):
 
     f = tmp_path / "check_me.txt"
     f.write_text("x")
-    await _delete_file(str(f), tracking_confirm, _NO_RESTRICTED)
+    await _delete_file(str(f), tracking_confirm, _audit_noop, _NO_RESTRICTED)
     # The path in the confirm args should be absolute
     path_arg = received_args[-1] if received_args else ""
     assert path_arg.startswith("/"), f"Expected absolute path, got: {path_arg}"

@@ -4,11 +4,12 @@ A locally-hosted autonomous AI utility agent for managing an Ubuntu workstation 
 
 ## Key Architecture Rules
 
-- **Ollama runs in Docker** — always communicate via HTTP to `http://localhost:11434` (configurable). Never call `ollama` CLI.
+- **Ollama runs natively** — systemd service (`ollama.service`), not Docker. Always communicate via HTTP to `http://localhost:11434`. Never call `ollama` CLI directly from tool code.
 - **No `shell=True` ever** — all commands use explicit argument arrays via `subprocess`/`pty`.
 - **No LangChain** — custom orchestration only.
 - **No raw LLM text → shell** — LLM outputs JSON tool calls; execution layer dispatches them.
 - **MAX_AGENT_STEPS = 10** — hard ceiling per request, not a soft warning.
+- **User config overrides default** — `~/.laua/config.yaml` always wins over `config/default.yaml`. Check both when debugging model/routing issues.
 
 ## Project Structure
 
@@ -52,7 +53,47 @@ pip install -e ".[dev]"
 laua
 ```
 
-Ollama must be running in Docker with port 11434 mapped to localhost.
+`laua` is symlinked to `~/.local/bin/laua` — callable from any terminal without activating the venv.
+
+Ollama runs as a native systemd service. Start/stop: `sudo systemctl start|stop ollama`. Models live at `/usr/share/ollama/.ollama/models/`.
+
+## GPU
+
+- **Hardware**: NVIDIA RTX 4050 6GB VRAM
+- **Driver**: 580.142, CUDA 13.0
+- **Ollama**: 33/33 layers offloaded to GPU (~5GB VRAM for qwen3.5:4b). ~130 tok/s.
+- If GPU stops being used: check `ollama ps` and `nvidia-smi`. Common cause: NVML init failure in a stale service — `sudo systemctl restart ollama`.
+
+## Model Routing (current)
+
+All routes use `qwen3.5:4b` — consistent quality, fits fully on GPU. Routing tiers exist for future differentiation. Active config in `~/.laua/config.yaml`:
+
+```yaml
+model_routing:
+  fast: "qwen3.5:4b"
+  contextual: "qwen3.5:4b"
+  reasoning: "qwen3.5:4b"
+  coding: "qwen3.5:4b"
+  fallback: "qwen3.5:2b"
+```
+
+Routing keywords in `laua/planner/router.py`. Network/docker/journal queries route to `reasoning` tier.
+
+## Models on disk (at `/usr/share/ollama/.ollama/models/`)
+
+| Model | Size | Tool calling | Notes |
+|-------|------|-------------|-------|
+| qwen3.5:4b | 3.4GB | ✓ good | Primary model, full GPU |
+| qwen3.5:2b | 2.7GB | ✓ ok | Fallback |
+| qwen3.5:0.8b | 1GB | ✓ poor | Hallucinates enum values |
+| llama3.2:3b | 2GB | ✓ poor | Passes args as JSON strings |
+| mistral:latest | 4.4GB | ✓ ok | Hallucinates subfields |
+| qwen3.5:9b | 6.6GB | — | Exceeds VRAM |
+| gemma4:e2b | 7.2GB | ✓ smart | Exceeds VRAM, too slow |
+| gemma4:e4b | 9.6GB | — | Way too large |
+| deepseek-r1:8b | 5.2GB | ✗ | 400 on tool calls — reasoning-only |
+| nomic-embed-text | 274MB | — | Embedding only |
+| glm-ocr | 2.2GB | — | OCR only |
 
 ## Config
 
@@ -60,6 +101,19 @@ Ollama must be running in Docker with port 11434 mapped to localhost.
 - `OLLAMA_BASE_URL` — e.g. `http://localhost:11434`
 - `OLLAMA_MODEL` — default model name
 - `LAUA_CONFIG` — path to config file
+
+## Phase 2 status — complete (as of this session)
+
+Core tool reliability fixes done this session:
+- **JSON coercion**: orchestrator pre-processes string args to native JSON before dispatch
+- **Enum normalization**: `RAM→memory`, `processor→cpu`, `storage→disk`, `procs→processes`
+- **Safety layer**: read-only cmds (`cat`, `grep`, `head`…) on `/proc` and `/sys` skip sudo gate; `/etc` still requires confirmation
+- **System prompt**: strict format rules — max 4 sentences, no code blocks, no command suggestions, conversational gate for greetings
+
+Known remaining issues before Phase 3:
+- Model still sometimes summarises tool output with minor fabrications (reports data not in the output)
+- Network output (`ip addr`) produces verbose raw text that 4b sometimes misreads — mitigated with `ip -brief` in lingo map
+- No streaming indicator for tool steps (only spinner total elapsed shown)
 
 ## Tests
 

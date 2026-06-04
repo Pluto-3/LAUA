@@ -59,6 +59,7 @@ async def _write_file(
     path: str,
     content: str,
     confirm_fn: Callable,
+    audit_fn: Callable,
     restricted_paths: list[str],
     max_write_bytes: int,
 ) -> dict[str, Any]:
@@ -83,7 +84,14 @@ async def _write_file(
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
-        return {"status": "written", "path": str(p), "bytes": len(content.encode())}
+        byte_count = len(content.encode())
+        await audit_fn(
+            args=["write_file", str(p)],
+            stdout=f"{byte_count} bytes written",
+            stderr="",
+            exit_code=0,
+        )
+        return {"status": "written", "path": str(p), "bytes": byte_count}
     except PermissionError:
         return {"error": f"Permission denied: {p}"}
     except Exception as exc:
@@ -144,6 +152,7 @@ async def _search_files(
 async def _delete_file(
     path: str,
     confirm_fn: Callable,
+    audit_fn: Callable,
     restricted_paths: list[str],
 ) -> dict[str, Any]:
     p = Path(path).expanduser()
@@ -162,6 +171,12 @@ async def _delete_file(
 
     try:
         p.unlink()
+        await audit_fn(
+            args=["delete_file", str(p)],
+            stdout="deleted",
+            stderr="",
+            exit_code=0,
+        )
         return {"status": "deleted", "path": str(p)}
     except PermissionError:
         return {"error": f"Permission denied: {p}"}
@@ -172,6 +187,7 @@ async def _delete_file(
 def register_file_tools(
     registry: ToolRegistry,
     confirm_fn: Callable,
+    audit_fn: Callable,
     restricted_paths: list[str],
     max_search_results: int = 50,
     max_write_bytes: int = 10 * 1024 * 1024,
@@ -211,7 +227,7 @@ def register_file_tools(
             "additionalProperties": False,
         },
         handler=lambda path, content: _write_file(
-            path, content, confirm_fn, restricted_paths, max_write_bytes
+            path, content, confirm_fn, audit_fn, restricted_paths, max_write_bytes
         ),
     ))
 
@@ -265,5 +281,5 @@ def register_file_tools(
             "required": ["path"],
             "additionalProperties": False,
         },
-        handler=lambda path: _delete_file(path, confirm_fn, restricted_paths),
+        handler=lambda path: _delete_file(path, confirm_fn, audit_fn, restricted_paths),
     ))

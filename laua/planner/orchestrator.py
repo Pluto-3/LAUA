@@ -28,15 +28,41 @@ def _coerce_args(args: dict) -> dict:
             result[k] = v
     return result
 _MAX_MODEL_FAILURES = 2
+_TOOL_OUTPUT_MAX_CHARS = 2500
+
+
+def _truncate_tool_output(tool_content: Any) -> Any:
+    """Clip long stdout/output fields so the model doesn't misread walls of text."""
+    if not isinstance(tool_content, dict):
+        return tool_content
+    result = dict(tool_content)
+    for field in ("stdout", "output", "content"):
+        if field in result and isinstance(result[field], str):
+            val = result[field]
+            if len(val) > _TOOL_OUTPUT_MAX_CHARS:
+                omitted = len(val) - _TOOL_OUTPUT_MAX_CHARS
+                result[field] = val[:_TOOL_OUTPUT_MAX_CHARS] + f"\n[... {omitted} chars truncated]"
+    return result
+
 
 _SYSTEM_PROMPT = """You are LAUA — a local system management agent for Ubuntu Linux. You are not a coding assistant, teacher, or documentation writer.
 
 RESPONSE FORMAT (strictly enforced):
 - 1 to 4 plain sentences. No more.
-- No code blocks, no markdown headers, no bullet lists unless listing 3+ distinct items.
+- No markdown of any kind: no bold (**text**), no italic, no headers, no code blocks.
+- No bullet lists, no numbered lists, no label:value lines. Write as prose sentences only.
+- Separate multiple data points with commas within a sentence. Do not use newlines as separators.
 - No preamble ("Sure!", "Let me...", "Of course"). Get to the point.
 - Never suggest commands for the user to run. Execute them yourself with tools.
 - Never fabricate data. Report only what tools return.
+- Copy exact numeric values from tool output — never round, approximate, or add qualifiers like "about" or "roughly". If the tool says 15.98 GB, say 15.98 GB. If it says 58.7%, say 58.7%.
+- If tool output was truncated, say so. Do not fill in missing values from memory or assumption.
+
+IDENTITY:
+- Your name is LAUA — Local Autonomous Utility Agent.
+- You were created by wzrdpluto.
+- You run fully locally on wzrdpluto's Ubuntu workstation, powered by Ollama.
+- When asked who made you, who built you, or who created you — answer directly: wzrdpluto.
 
 CONVERSATIONAL INPUT (greetings, "how are you", "what can you do", small talk):
 - Reply in plain text. Do NOT call any tool.
@@ -56,6 +82,8 @@ TOOL RULES:
 - One tool call per step. Wait for results before calling again.
 - Before any destructive action (delete, stop, kill), state exactly what you will do first.
 - If a tool returns an error, report it and stop. Do not retry blindly.
+- ALWAYS call the tool before reporting any outcome. Never predict or assume results — not even errors. If asked to read, execute, or check something, call the tool first, then report what it actually returned.
+- Live system data (cpu, memory, disk, processes, temperatures, network) changes constantly. Never answer these from conversation history. Always call get_system_info or run_command for a fresh value.
 """
 
 
@@ -113,6 +141,7 @@ class Orchestrator:
         self,
         user_request: str,
         on_step: Callable[[StepResult], None] | None = None,
+        on_step_start: Callable[[str, int], None] | None = None,
         on_token: Callable[[str], None] | None = None,
     ) -> OrchestratorResult:
         result = OrchestratorResult()
@@ -164,6 +193,9 @@ class Orchestrator:
                 arguments = raw_args if isinstance(raw_args, dict) else json.loads(raw_args)
                 arguments = _coerce_args(arguments)
 
+                if on_step_start is not None:
+                    on_step_start(tool_name, step)
+
                 try:
                     tool_result = await self._registry.dispatch(tool_name, arguments)
                     step_result = StepResult(
@@ -181,7 +213,7 @@ class Orchestrator:
                     on_step(step_result)
                 err = step_result.error
                 tool_content = step_result.result if err is None else {"error": err}
-                messages.append({"role": "tool", "content": json.dumps(tool_content)})
+                messages.append({"role": "tool", "content": json.dumps(_truncate_tool_output(tool_content))})
         else:
             result.hit_step_ceiling = True
             result.final_response = (

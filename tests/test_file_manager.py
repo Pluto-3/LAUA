@@ -16,6 +16,7 @@ _CONFIRM_NO  = lambda args, **kw: _async_false()
 import asyncio
 async def _async_true(*a, **kw): return True
 async def _async_false(*a, **kw): return False
+async def _AUDIT_NOOP(*a, **kw): pass
 
 
 # ── _is_restricted ────────────────────────────────────────────────────────────
@@ -69,7 +70,7 @@ async def test_list_directory_with_pattern(tmp_path):
 @pytest.mark.asyncio
 async def test_write_file_creates_new(tmp_path):
     path = str(tmp_path / "new.txt")
-    result = await _write_file(path, "hello", _CONFIRM_YES, _NO_RESTRICTED, 1024)
+    result = await _write_file(path, "hello", _CONFIRM_YES, _AUDIT_NOOP, _NO_RESTRICTED, 1024)
     assert result["status"] == "written"
     assert Path(path).read_text() == "hello"
 
@@ -77,7 +78,7 @@ async def test_write_file_creates_new(tmp_path):
 async def test_write_file_overwrite_requires_confirm_yes(tmp_path):
     path = tmp_path / "existing.txt"
     path.write_text("old")
-    result = await _write_file(str(path), "new", _CONFIRM_YES, _NO_RESTRICTED, 1024)
+    result = await _write_file(str(path), "new", _CONFIRM_YES, _AUDIT_NOOP, _NO_RESTRICTED, 1024)
     assert result["status"] == "written"
     assert path.read_text() == "new"
 
@@ -85,25 +86,25 @@ async def test_write_file_overwrite_requires_confirm_yes(tmp_path):
 async def test_write_file_overwrite_confirm_no(tmp_path):
     path = tmp_path / "existing.txt"
     path.write_text("original")
-    result = await _write_file(str(path), "new", _CONFIRM_NO, _NO_RESTRICTED, 1024)
+    result = await _write_file(str(path), "new", _CONFIRM_NO, _AUDIT_NOOP, _NO_RESTRICTED, 1024)
     assert result["status"] == "blocked"
     assert path.read_text() == "original"
 
 @pytest.mark.asyncio
 async def test_write_file_restricted_blocked(tmp_path):
-    result = await _write_file("/etc/test_laua.txt", "x", _CONFIRM_YES, ["/etc"], 1024)
+    result = await _write_file("/etc/test_laua.txt", "x", _CONFIRM_YES, _AUDIT_NOOP, ["/etc"], 1024)
     assert "error" in result
 
 @pytest.mark.asyncio
 async def test_write_file_exceeds_max_bytes(tmp_path):
     path = str(tmp_path / "big.txt")
-    result = await _write_file(path, "x" * 200, _CONFIRM_YES, _NO_RESTRICTED, 10)
+    result = await _write_file(path, "x" * 200, _CONFIRM_YES, _AUDIT_NOOP, _NO_RESTRICTED, 10)
     assert "error" in result
 
 @pytest.mark.asyncio
 async def test_write_file_creates_parent_dirs(tmp_path):
     path = str(tmp_path / "deep" / "nested" / "file.txt")
-    result = await _write_file(path, "hi", _CONFIRM_YES, _NO_RESTRICTED, 1024)
+    result = await _write_file(path, "hi", _CONFIRM_YES, _AUDIT_NOOP, _NO_RESTRICTED, 1024)
     assert result["status"] == "written"
 
 
@@ -152,7 +153,7 @@ async def test_search_files_no_criteria_returns_all(tmp_path):
 async def test_delete_file_confirm_yes(tmp_path):
     f = tmp_path / "to_delete.txt"
     f.write_text("bye")
-    result = await _delete_file(str(f), _CONFIRM_YES, _NO_RESTRICTED)
+    result = await _delete_file(str(f), _CONFIRM_YES, _AUDIT_NOOP, _NO_RESTRICTED)
     assert result["status"] == "deleted"
     assert not f.exists()
 
@@ -160,21 +161,21 @@ async def test_delete_file_confirm_yes(tmp_path):
 async def test_delete_file_confirm_no(tmp_path):
     f = tmp_path / "keep.txt"
     f.write_text("keep me")
-    result = await _delete_file(str(f), _CONFIRM_NO, _NO_RESTRICTED)
+    result = await _delete_file(str(f), _CONFIRM_NO, _AUDIT_NOOP, _NO_RESTRICTED)
     assert result["status"] == "blocked"
     assert f.exists()
 
 @pytest.mark.asyncio
 async def test_delete_file_nonexistent():
-    result = await _delete_file("/nonexistent/xyz.txt", _CONFIRM_YES, _NO_RESTRICTED)
+    result = await _delete_file("/nonexistent/xyz.txt", _CONFIRM_YES, _AUDIT_NOOP, _NO_RESTRICTED)
     assert "error" in result
 
 @pytest.mark.asyncio
 async def test_delete_file_restricted():
-    result = await _delete_file("/etc/passwd", _CONFIRM_YES, ["/etc"])
+    result = await _delete_file("/etc/passwd", _CONFIRM_YES, _AUDIT_NOOP, ["/etc"])
     assert "error" in result
 
 @pytest.mark.asyncio
 async def test_delete_directory_rejected(tmp_path):
-    result = await _delete_file(str(tmp_path), _CONFIRM_YES, _NO_RESTRICTED)
+    result = await _delete_file(str(tmp_path), _CONFIRM_YES, _AUDIT_NOOP, _NO_RESTRICTED)
     assert "error" in result
