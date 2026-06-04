@@ -19,6 +19,7 @@ monitor:
 
 memory:
   db_path: "~/.laua/laua.db"
+  workflows_db_path: "~/.laua/workflows.db"
   max_history_tokens: 4096
   context_window_trigger: 0.80
 

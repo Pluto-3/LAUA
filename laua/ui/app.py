@@ -18,8 +18,11 @@ from laua.executor.audit import AuditLog
 from laua.executor.pty_session import PtySession
 from laua.memory.context import ContextManager
 from laua.memory.store import MemoryStore
+from laua.memory.workflows import WorkflowStore
+from laua.monitor.recommendations import RecommendationEngine
 from laua.ollama_client import OllamaClient
 from laua.planner.orchestrator import Orchestrator, StepResult
+from laua.planner.planner import Planner
 from laua.planner.router import ModelRouter
 from laua.tools.core import register_core_tools
 from laua.tools.docker_tool import register_docker_tools
@@ -94,6 +97,19 @@ class LauaApp(App):
         color: $text-muted;
         margin-bottom: 1;
     }
+    .plan-msg {
+        color: $text-muted;
+        text-style: italic;
+        margin-top: 1;
+    }
+    .recommend-msg {
+        color: $accent;
+        margin-top: 1;
+    }
+    .dry-run-msg {
+        color: $warning;
+        text-style: bold;
+    }
     Input {
         dock: bottom;
         border: none;
@@ -139,6 +155,10 @@ class LauaApp(App):
         self._cmd_timeout: int = 30
         self._context_mgr: ContextManager | None = None
         self._shell_active: bool = False
+        self._workflows: WorkflowStore | None = None
+        self._recording: bool = False
+        self._record_name: str = ""
+        self._recording_steps: list[dict] = []
 
     def compose(self) -> ComposeResult:
         yield _LogPane(id="log")
@@ -148,6 +168,11 @@ class LauaApp(App):
     async def on_mount(self) -> None:
         await self._audit.init()
         await self._memory.init()
+
+        mem_cfg = self._cfg["memory"]
+        workflows_path = mem_cfg.get("workflows_db_path", "~/.laua/workflows.db")
+        self._workflows = WorkflowStore(workflows_path)
+        await self._workflows.init()
 
         self._show_plan = self._cfg.get("ui", {}).get("show_plan", True)
         self._current_model = self._cfg["ollama"]["default_model"]
@@ -160,13 +185,20 @@ class LauaApp(App):
         else:
             prior_history = await self._memory.get_history(self._session_id)
 
-        mem_cfg = self._cfg["memory"]
         context_mgr = ContextManager(
             model_max_tokens=mem_cfg.get("max_history_tokens", 4096),
             trigger_ratio=mem_cfg.get("context_window_trigger", 0.80),
         )
         self._context_mgr = context_mgr
         router = ModelRouter(self._cfg.get("model_routing", {}))
+        planner = Planner(self._ollama, self._cfg["ollama"]["default_model"])
+        mon_cfg = self._cfg.get("monitor", {})
+        recommender = RecommendationEngine(
+            disk_warn=mon_cfg.get("disk_alert_threshold", 85.0),
+            disk_critical=95.0,
+            memory_warn=mon_cfg.get("memory_alert_threshold", 88.0),
+            memory_critical=95.0,
+        )
         restricted = self._cfg["permissions"]["restricted_paths"]
         fm_cfg = self._cfg.get("file_manager", {})
 
@@ -193,6 +225,8 @@ class LauaApp(App):
             history=prior_history,
             context_manager=context_mgr,
             model_router=router,
+            planner=planner,
+            recommendation_engine=recommender,
         )
 
         log = self.query_one("#log", _LogPane)
@@ -306,24 +340,73 @@ class LauaApp(App):
             return
         event.input.clear()
 
+        log = self.query_one("#log", _LogPane)
+
         if prompt == "/clear":
-            log = self.query_one("#log", _LogPane)
             await log.query("Static").remove()
             return
 
+        if prompt == "/workflows":
+            asyncio.create_task(self._cmd_list_workflows())
+            return
+
+        if prompt.startswith("/record "):
+            name = prompt[8:].strip()
+            if name:
+                self._recording = True
+                self._record_name = name
+                self._recording_steps = []
+                await log.mount(Static(
+                    f"Recording '{name}' — run your commands, then type /stop to save.",
+                    classes="dim-msg",
+                ))
+                log.scroll_end(animate=False)
+            return
+
+        if prompt == "/stop":
+            if self._recording and self._recording_steps:
+                assert self._workflows is not None
+                await self._workflows.save(self._record_name, self._recording_steps)
+                await log.mount(Static(
+                    f"Saved workflow '{self._record_name}' ({len(self._recording_steps)} steps).",
+                    classes="dim-msg",
+                ))
+            elif self._recording:
+                await log.mount(Static("Nothing recorded — workflow not saved.", classes="warn-msg"))
+            else:
+                await log.mount(Static("Not currently recording.", classes="warn-msg"))
+            self._recording = False
+            self._record_name = ""
+            self._recording_steps = []
+            log.scroll_end(animate=False)
+            return
+
+        if prompt.startswith("/run "):
+            name = prompt[5:].strip()
+            if name:
+                asyncio.create_task(self._replay_workflow(name))
+            return
+
+        dry_run = False
+        actual_prompt = prompt
+        if prompt.lower().startswith("/dry-run "):
+            dry_run = True
+            actual_prompt = prompt[9:].strip()
+            await log.mount(Static("[DRY RUN] Simulating — no destructive actions will execute.", classes="dry-run-msg"))
+            log.scroll_end(animate=False)
+
         event.input.disabled = True
 
-        log = self.query_one("#log", _LogPane)
-        await log.mount(Static(f"> {prompt}", classes="user-msg"))
+        await log.mount(Static(f"> {actual_prompt}", classes="user-msg"))
         log.scroll_end(animate=False)
 
         self._stream_buffer = ""
         self._stream_widget = None
         self._stream_widget_mounted = False
         assert self._orchestrator is not None
-        asyncio.create_task(self._process_request(prompt))
+        asyncio.create_task(self._process_request(actual_prompt, dry_run=dry_run))
 
-    async def _process_request(self, prompt: str) -> None:
+    async def _process_request(self, prompt: str, dry_run: bool = False) -> None:
         log = self.query_one("#log", _LogPane)
         inp = self.query_one("#prompt", _PromptInput)
 
@@ -334,6 +417,8 @@ class LauaApp(App):
                 on_step=self._on_step,
                 on_step_start=self._on_step_start,
                 on_token=self._on_token,
+                on_plan=self._on_plan,
+                dry_run=dry_run,
             )
         except Exception as exc:
             self._stop_spinner()
@@ -361,6 +446,10 @@ class LauaApp(App):
             await log.mount(Static(result.final_response, classes="response"))
             log.scroll_end(animate=False)
 
+        if result.recommendation:
+            await log.mount(Static(f"→ {result.recommendation}", classes="recommend-msg"))
+            log.scroll_end(animate=False)
+
         self._stream_widget = None
         self._stream_buffer = ""
         self._stream_widget_mounted = False
@@ -372,6 +461,15 @@ class LauaApp(App):
         self._think_step = step
         self._step_start = time.monotonic()
 
+    def _on_plan(self, plan: list[dict]) -> None:
+        asyncio.create_task(self._mount_plan(plan))
+
+    async def _mount_plan(self, plan: list[dict]) -> None:
+        log = self.query_one("#log", _LogPane)
+        lines = "  ".join(f"{s['step']}. {s['description']}" for s in plan)
+        await log.mount(Static(f"Plan: {lines}", classes="plan-msg"))
+        log.scroll_end(animate=False)
+
     def _on_step(self, step: StepResult) -> None:
         self._think_step = step.step
         self._think_tool = step.tool_name
@@ -380,6 +478,11 @@ class LauaApp(App):
             self._shell_active = True
             if cwd := step.result.get("cwd"):
                 self._session.cwd = cwd
+        if self._recording and not step.error:
+            self._recording_steps.append({
+                "tool_name": step.tool_name,
+                "arguments": step.arguments,
+            })
         if self._show_plan:
             asyncio.create_task(self._mount_step(step))
 
@@ -415,6 +518,53 @@ class LauaApp(App):
         if self._stream_widget is not None:
             self._stream_widget.update(self._stream_buffer)
         log.scroll_end(animate=False)
+
+    async def _cmd_list_workflows(self) -> None:
+        log = self.query_one("#log", _LogPane)
+        assert self._workflows is not None
+        workflows = await self._workflows.list_workflows()
+        if not workflows:
+            await log.mount(Static("No saved workflows.", classes="dim-msg"))
+        else:
+            lines = ["Saved workflows:"]
+            for w in workflows:
+                lines.append(f"  {w['name']}  (run {w['run_count']}x)")
+            await log.mount(Static("\n".join(lines), classes="dim-msg"))
+        log.scroll_end(animate=False)
+
+    async def _replay_workflow(self, name: str) -> None:
+        log = self.query_one("#log", _LogPane)
+        inp = self.query_one("#prompt", _PromptInput)
+        assert self._workflows is not None
+
+        steps = await self._workflows.load(name)
+        if steps is None:
+            await log.mount(Static(f"No workflow named '{name}'.", classes="error-msg"))
+            log.scroll_end(animate=False)
+            return
+
+        await log.mount(Static(f"> /run {name}", classes="user-msg"))
+        await log.mount(Static(f"Replaying '{name}' ({len(steps)} steps)…", classes="dim-msg"))
+        log.scroll_end(animate=False)
+        inp.disabled = True
+
+        self._start_spinner()
+        for i, step_data in enumerate(steps, start=1):
+            tool_name = step_data["tool_name"]
+            arguments = step_data["arguments"]
+            self._on_step_start(tool_name, i)
+            try:
+                result = await self._tools.dispatch(tool_name, arguments)
+                sr = StepResult(step=i, tool_name=tool_name, arguments=arguments, result=result)
+            except Exception as exc:
+                sr = StepResult(step=i, tool_name=tool_name, arguments=arguments, result=None, error=str(exc))
+            self._on_step(sr)
+
+        self._stop_spinner()
+        await log.mount(Static(f"Workflow '{name}' complete.", classes="dim-msg"))
+        log.scroll_end(animate=False)
+        inp.disabled = False
+        inp.focus()
 
     async def _confirm(self, args: list[str], requires_sudo: bool = False) -> bool:
         log = self.query_one("#log", _LogPane)

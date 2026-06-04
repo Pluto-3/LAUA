@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -13,6 +14,29 @@ from laua.tools.registry import ToolRegistry
 logger = logging.getLogger(__name__)
 
 MAX_AGENT_STEPS = 10
+
+
+_MD_CODE_BLOCK = re.compile(r"```[^\n]*\n?(.*?)```", re.DOTALL)
+_MD_INLINE_CODE = re.compile(r"`([^`]+)`")
+_MD_BOLD = re.compile(r"\*\*([^*]+)\*\*")
+_MD_ITALIC = re.compile(r"\*([^*]+)\*")
+_MD_HEADER = re.compile(r"^#{1,6}\s+", re.MULTILINE)
+_MD_BULLET = re.compile(r"^\s*[-*]\s+", re.MULTILINE)
+_MD_NUMBERED = re.compile(r"^\s*\d+\.\s+", re.MULTILINE)
+
+
+def _strip_markdown(text: str) -> str:
+    """Remove markdown formatting that the model emits despite system-prompt rules."""
+    text = _MD_CODE_BLOCK.sub(lambda m: m.group(1).strip(), text)
+    text = _MD_INLINE_CODE.sub(r"\1", text)
+    text = _MD_BOLD.sub(r"\1", text)
+    text = _MD_ITALIC.sub(r"\1", text)
+    text = _MD_HEADER.sub("", text)
+    text = _MD_BULLET.sub("", text)
+    text = _MD_NUMBERED.sub("", text)
+    # Collapse runs of blank lines left by removed blocks
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 def _coerce_args(args: dict) -> dict:
@@ -84,6 +108,11 @@ TOOL RULES:
 - If a tool returns an error, report it and stop. Do not retry blindly.
 - ALWAYS call the tool before reporting any outcome. Never predict or assume results — not even errors. If asked to read, execute, or check something, call the tool first, then report what it actually returned.
 - Live system data (cpu, memory, disk, processes, temperatures, network) changes constantly. Never answer these from conversation history. Always call get_system_info or run_command for a fresh value.
+
+DRY-RUN MODE:
+- When tool results contain "dry_run": true, you are simulating — no action was executed.
+- Describe what WOULD happen: "Would run: ls -la /tmp" or "Would delete: /tmp/old.log".
+- Do not say "I cannot execute" — describe the planned action instead.
 """
 
 
@@ -103,6 +132,8 @@ class OrchestratorResult:
     hit_step_ceiling: bool = False
     error: str | None = None
     model_used: str = ""
+    plan: list[dict] | None = None
+    recommendation: str | None = None
 
 
 class Orchestrator:
@@ -114,6 +145,8 @@ class Orchestrator:
         history: list[dict[str, Any]] | None = None,
         context_manager: Any | None = None,
         model_router: Any | None = None,
+        planner: Any | None = None,
+        recommendation_engine: Any | None = None,
     ) -> None:
         self._ollama = ollama
         self._registry = registry
@@ -121,6 +154,8 @@ class Orchestrator:
         self._history: list[dict[str, Any]] = history or []
         self._context_manager = context_manager
         self._router = model_router
+        self._planner = planner
+        self._recommendation_engine = recommendation_engine
         self._model_failures: dict[str, int] = {}
 
     def _pick_model(self, user_request: str) -> str:
@@ -143,10 +178,20 @@ class Orchestrator:
         on_step: Callable[[StepResult], None] | None = None,
         on_step_start: Callable[[str, int], None] | None = None,
         on_token: Callable[[str], None] | None = None,
+        on_plan: Callable[[list[dict]], None] | None = None,
+        dry_run: bool = False,
     ) -> OrchestratorResult:
         result = OrchestratorResult()
         active_model = self._pick_model(user_request)
         result.model_used = active_model
+
+        # Generate a plan for complex multi-step requests
+        if self._planner and self._planner.is_complex(user_request):
+            plan_steps = await self._planner.plan(user_request)
+            if plan_steps:
+                result.plan = [s.to_dict() for s in plan_steps]
+                if on_plan is not None:
+                    on_plan(result.plan)
 
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": _SYSTEM_PROMPT},
@@ -181,7 +226,7 @@ class Orchestrator:
                     self._model_failures[active_model] = (
                         self._model_failures.get(active_model, 0) + 1
                     )
-                result.final_response = content
+                result.final_response = _strip_markdown(content)
                 break
 
             messages.append({"role": "assistant", "content": None, "tool_calls": tool_calls})
@@ -189,6 +234,14 @@ class Orchestrator:
             for call in tool_calls:
                 fn = call.get("function", {})
                 tool_name = fn.get("name", "")
+                if not tool_name:
+                    # Malformed tool call — model didn't follow the schema
+                    self._model_failures[active_model] = (
+                        self._model_failures.get(active_model, 0) + 1
+                    )
+                    logger.warning("Model returned tool call with empty name — counting as failure")
+                    continue
+
                 raw_args = fn.get("arguments", {})
                 arguments = raw_args if isinstance(raw_args, dict) else json.loads(raw_args)
                 arguments = _coerce_args(arguments)
@@ -197,11 +250,16 @@ class Orchestrator:
                     on_step_start(tool_name, step)
 
                 try:
-                    tool_result = await self._registry.dispatch(tool_name, arguments)
+                    tool_result = await self._registry.dispatch(tool_name, arguments, dry_run=dry_run)
                     step_result = StepResult(
                         step=step, tool_name=tool_name, arguments=arguments, result=tool_result
                     )
                 except Exception as exc:
+                    # Schema validation failures mean the model sent bad args — count as model error
+                    if "Invalid arguments" in str(exc):
+                        self._model_failures[active_model] = (
+                            self._model_failures.get(active_model, 0) + 1
+                        )
                     step_result = StepResult(
                         step=step, tool_name=tool_name,
                         arguments=arguments, result=None, error=str(exc),
@@ -220,6 +278,9 @@ class Orchestrator:
                 f"Reached the {MAX_AGENT_STEPS}-step limit without completing the task. "
                 "Please provide further guidance."
             )
+
+        if self._recommendation_engine and result.steps:
+            result.recommendation = self._recommendation_engine.check(result.steps)
 
         self._history.extend([
             {"role": "user", "content": user_request},
