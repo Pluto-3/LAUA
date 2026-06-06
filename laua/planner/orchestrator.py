@@ -113,6 +113,7 @@ TOOL RULES:
 - If a tool returns an error, report it and stop. Do not retry blindly.
 - ALWAYS call the tool before reporting any outcome. Never predict or assume results — not even errors. If asked to read, execute, or check something, call the tool first, then report what it actually returned.
 - Live system data (cpu, memory, disk, processes, temperatures, network) changes constantly. Never answer these from conversation history. Always call get_system_info or run_command for a fresh value.
+- If the user declines a follow-up suggestion ("no", "don't", "not now", "leave it", "never mind", "skip it"), acknowledge with one short sentence and do NOT call any tools.
 - After any stop, kill, or shutdown action, verify with a follow-up tool call that the target is actually gone. If it is still running (e.g., a process was killed but respawned because a container manages it), escalate automatically: stop the parent container rather than retrying the same command. Do not wait for the user to tell you it failed — detect it yourself and take the next-level action.
 
 DRY-RUN MODE:
@@ -296,8 +297,14 @@ class Orchestrator:
         if self._recommendation_engine and result.steps:
             result.recommendation = self._recommendation_engine.check(result.steps)
 
+        # Include recommendation in history so the model knows what it offered
+        # on the next turn — without this, user declines have no referent
+        assistant_content = result.final_response
+        if result.recommendation:
+            assistant_content += f"\n→ {result.recommendation}"
+
         self._history.extend([
             {"role": "user", "content": user_request},
-            {"role": "assistant", "content": result.final_response},
+            {"role": "assistant", "content": assistant_content},
         ])
         return result
