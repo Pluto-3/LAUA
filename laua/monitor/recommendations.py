@@ -75,10 +75,11 @@ class RecommendationEngine:
                 f"Disk at {snap.disk_percent:.1f}% ({snap.disk_free_gb} GB free)"
                 " — want me to find large files to clean up?"
             )
-        # Prefer a specific process culprit over a generic RAM alert
-        proc_rec = self._check_processes(snap.top_processes)
-        if proc_rec:
-            return f"RAM at {snap.memory_percent:.1f}% — {proc_rec}"
+        # Only dig into processes when RAM is actually elevated
+        if snap.memory_percent >= self._memory_warn:
+            proc_rec = self._check_processes(snap.top_processes)
+            if proc_rec:
+                return f"RAM at {snap.memory_percent:.1f}% — {proc_rec}"
         if snap.memory_percent >= self._memory_critical:
             return f"RAM critically high at {snap.memory_percent:.1f}% — want me to show the top consumers?"
         if snap.memory_percent >= self._memory_warn:
