@@ -168,6 +168,8 @@ class LauaApp(App):
         self._sys_monitor: SystemMonitor | None = None
         self._monitor_timer: Timer | None = None
         self._recommender: RecommendationEngine | None = None
+        self._orchestrator_busy: bool = False
+        self._monitor_acting: bool = False
 
     def compose(self) -> ComposeResult:
         yield _LogPane(id="log")
@@ -455,6 +457,7 @@ class LauaApp(App):
         log = self.query_one("#log", _LogPane)
         inp = self.query_one("#prompt", _PromptInput)
 
+        self._orchestrator_busy = True
         self._start_spinner()
         try:
             result = await self._orchestrator.run(
@@ -466,6 +469,7 @@ class LauaApp(App):
                 dry_run=dry_run,
             )
         except Exception as exc:
+            self._orchestrator_busy = False
             self._stop_spinner()
             await log.mount(Static(f"Error: {exc}", classes="error-msg"))
             log.scroll_end(animate=False)
@@ -473,6 +477,7 @@ class LauaApp(App):
             inp.focus()
             return
 
+        self._orchestrator_busy = False
         self._stop_spinner(result.model_used or None)
 
         if self._session_id is not None:
@@ -619,6 +624,13 @@ class LauaApp(App):
         inp.focus()
 
     async def _confirm(self, args: list[str], requires_sudo: bool = False) -> bool:
+        if self._monitor_acting:
+            log = self.query_one("#log", _LogPane)
+            await log.mount(Static(
+                f"[monitor] auto-approved: {' '.join(args)}", classes="dim-msg"
+            ))
+            log.scroll_end(animate=False)
+            return True
         log = self.query_one("#log", _LogPane)
         display = " ".join(args)
         prefix = "[SUDO] " if requires_sudo else ""
@@ -653,17 +665,85 @@ class LauaApp(App):
 
         await asyncio.to_thread(_run_xclip)
 
+    @staticmethod
+    def _is_actionable(suggestion: str) -> bool:
+        return "want me to stop them?" in suggestion or "want me to find" in suggestion
+
+    @staticmethod
+    def _to_directive(suggestion: str) -> str:
+        s = suggestion
+        s = s.replace("— want me to stop them?", "— stop them now. After stopping, verify they are gone.")
+        s = s.replace("want me to find large files to clean up?", "find the top 10 largest files and list them with sizes.")
+        s = s.replace("want me to find the largest files?", "find the top 10 largest files and list them with sizes.")
+        return s
+
+    async def _monitor_act(self, suggestion: str) -> None:
+        if self._orchestrator is None or self._sys_monitor is None:
+            return
+        log = self.query_one("#log", _LogPane)
+
+        # Capture baseline before acting
+        pre_snap = await self._sys_monitor.snapshot()
+
+        context = suggestion.split("—")[0].strip()
+        await log.mount(Static(
+            f"[monitor] {context} — acting autonomously…", classes="monitor-alert"
+        ))
+        log.scroll_end(animate=False)
+
+        directive = self._to_directive(suggestion)
+        history_len = len(self._orchestrator._history)
+        self._monitor_acting = True
+        self._orchestrator_busy = True
+        try:
+            result = await self._orchestrator.run(
+                directive,
+                on_step=self._on_step,
+                on_step_start=self._on_step_start,
+            )
+            post_snap = await self._sys_monitor.snapshot()
+
+            if result.error:
+                await log.mount(Static(
+                    f"[monitor] action failed: {result.error}", classes="error-msg"
+                ))
+            else:
+                summary = result.final_response
+                ram_delta = pre_snap.memory_percent - post_snap.memory_percent
+                disk_delta = pre_snap.disk_percent - post_snap.disk_percent
+                if ram_delta > 0.5:
+                    summary += (
+                        f" RAM: {pre_snap.memory_percent:.1f}%"
+                        f" → {post_snap.memory_percent:.1f}%."
+                    )
+                elif disk_delta > 0.5:
+                    summary += (
+                        f" Disk: {pre_snap.disk_percent:.1f}%"
+                        f" → {post_snap.disk_percent:.1f}%."
+                    )
+                await log.mount(Static(f"[monitor] {summary}", classes="monitor-alert"))
+            log.scroll_end(animate=False)
+        finally:
+            # Don't let monitor actions pollute the user's conversation history
+            del self._orchestrator._history[history_len:]
+            self._monitor_acting = False
+            self._orchestrator_busy = False
+
     async def _bg_poll(self) -> None:
         if self._sys_monitor is None or self._recommender is None:
             return
+        if self._orchestrator_busy:
+            return
         try:
             snap = await self._sys_monitor.snapshot()
-            # Prefer a specific actionable suggestion over a generic threshold alert
             suggestion = self._recommender.check_snapshot(snap)
             if suggestion:
-                log = self.query_one("#log", _LogPane)
-                await log.mount(Static(f"[monitor] {suggestion}", classes="monitor-alert"))
-                log.scroll_end(animate=False)
+                if self._is_actionable(suggestion):
+                    await self._monitor_act(suggestion)
+                else:
+                    log = self.query_one("#log", _LogPane)
+                    await log.mount(Static(f"[monitor] {suggestion}", classes="monitor-alert"))
+                    log.scroll_end(animate=False)
                 return
             alerts = detect_anomalies(snap)
             if alerts:
