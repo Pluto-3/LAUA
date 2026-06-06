@@ -20,6 +20,7 @@ from laua.memory.context import ContextManager
 from laua.memory.store import MemoryStore
 from laua.memory.workflows import WorkflowStore
 from laua.monitor.recommendations import RecommendationEngine
+from laua.monitor.system import SystemMonitor, detect_anomalies
 from laua.ollama_client import OllamaClient
 from laua.planner.orchestrator import Orchestrator, StepResult
 from laua.planner.planner import Planner
@@ -110,6 +111,10 @@ class LauaApp(App):
         color: $warning;
         text-style: bold;
     }
+    .monitor-alert {
+        color: $warning;
+        margin-top: 1;
+    }
     Input {
         dock: bottom;
         border: none;
@@ -159,6 +164,9 @@ class LauaApp(App):
         self._recording: bool = False
         self._record_name: str = ""
         self._recording_steps: list[dict] = []
+        self._last_response: str = ""
+        self._sys_monitor: SystemMonitor | None = None
+        self._monitor_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         yield _LogPane(id="log")
@@ -267,6 +275,15 @@ class LauaApp(App):
                 f"Warning: Ollama not reachable at {self._cfg['ollama']['base_url']}.",
                 classes="warn-msg",
             ))
+
+        poll_interval = mon_cfg.get("poll_interval", 60)
+        self._sys_monitor = SystemMonitor(
+            gpu_enabled=mon_cfg.get("gpu_enabled", True),
+            thermal_enabled=False,
+        )
+        await self._sys_monitor.refresh_excluded_pids()
+        self._monitor_timer = self.set_interval(poll_interval, self._bg_poll)
+
         self._set_status_idle()
         self.query_one("#prompt", _PromptInput).focus()
 
@@ -357,6 +374,7 @@ class LauaApp(App):
         if prompt == "/clear":
             await log.query("Static").remove()
             return
+
 
         if prompt == "/reset":
             await log.query("Static").remove()
@@ -462,6 +480,7 @@ class LauaApp(App):
             )
 
         if result.hit_step_ceiling:
+            self._last_response = result.final_response
             await log.mount(Static(result.final_response, classes="warn-msg"))
             log.scroll_end(animate=False)
         elif result.error:
@@ -469,9 +488,11 @@ class LauaApp(App):
             log.scroll_end(animate=False)
         elif self._stream_widget and self._stream_widget_mounted and result.final_response:
             # Streamed content was displayed raw — replace with the stripped final response
+            self._last_response = result.final_response
             self._stream_widget.update(result.final_response)
             log.scroll_end(animate=False)
         elif not self._stream_widget and result.final_response:
+            self._last_response = result.final_response
             await log.mount(Static(result.final_response, classes="response"))
             log.scroll_end(animate=False)
 
@@ -616,7 +637,37 @@ class LauaApp(App):
         inp.placeholder = "Ask LAUA anything..."
         return response.strip().lower() == "y"
 
+    async def key_ctrl_c(self) -> None:
+        if not self._last_response:
+            return
+        import subprocess
+        data = self._last_response.encode()
+
+        def _run_xclip() -> None:
+            try:
+                subprocess.run(["xclip", "-selection", "clipboard"], input=data, capture_output=True)
+            except FileNotFoundError:
+                subprocess.run(["xsel", "--clipboard", "--input"], input=data, capture_output=True)
+
+        await asyncio.to_thread(_run_xclip)
+
+    async def _bg_poll(self) -> None:
+        if self._sys_monitor is None:
+            return
+        try:
+            snap = await self._sys_monitor.snapshot()
+            alerts = detect_anomalies(snap)
+            if alerts:
+                log = self.query_one("#log", _LogPane)
+                for alert in alerts:
+                    await log.mount(Static(f"[monitor] {alert}", classes="monitor-alert"))
+                log.scroll_end(animate=False)
+        except Exception:
+            pass
+
     async def on_unmount(self) -> None:
+        if self._monitor_timer is not None:
+            self._monitor_timer.stop()
         if self._session_id is not None:
             await self._memory.end_session(self._session_id)
         await self._ollama.close()

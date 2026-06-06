@@ -11,6 +11,7 @@ executor:
 
 monitor:
   refresh_interval: 5
+  poll_interval: 60
   cpu_alert_threshold: 90
   disk_alert_threshold: 90
   memory_alert_threshold: 90

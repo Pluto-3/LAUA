@@ -7,6 +7,20 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from laua.planner.orchestrator import StepResult
 
+# Process name prefixes → human-readable service label
+_SERVICE_PATTERNS: dict[str, str] = {
+    "celery": "Paperless/Celery workers",
+    "celeryd": "Paperless/Celery workers",
+    "node": "Node.js processes",
+    "mysqld": "MySQL",
+    "postgres": "PostgreSQL",
+    "redis-server": "Redis",
+    "mongod": "MongoDB",
+    "java": "Java processes",
+}
+# Flag a service group when its combined RAM % hits this level
+_PROCESS_GROUP_MEM_THRESHOLD = 1.5
+
 
 class RecommendationEngine:
     def __init__(
@@ -44,5 +58,37 @@ class RecommendationEngine:
                     return f"RAM critically high at {pct}% — want me to show which processes are using the most?"
                 if pct >= self._memory_warn:
                     return f"RAM at {pct}% — want me to check which processes are consuming the most memory?"
+
+            proc_rec = self._check_processes(result.get("top_processes", []))
+            if proc_rec:
+                return proc_rec
+
+        return None
+
+    def _check_processes(self, processes: list[dict]) -> str | None:
+        """Flag heavyweight known-service groups by combined RAM %."""
+        if not processes:
+            return None
+
+        # display_name → (total_mem_pct, count)
+        groups: dict[str, list] = {}
+        for proc in processes:
+            name = (proc.get("name") or "").lower()
+            mem_pct = proc.get("memory_percent") or 0.0
+            for pattern, display in _SERVICE_PATTERNS.items():
+                if name == pattern or name.startswith(pattern):
+                    if display not in groups:
+                        groups[display] = [0.0, 0]
+                    groups[display][0] += mem_pct
+                    groups[display][1] += 1
+                    break
+
+        for display, (total_pct, count) in groups.items():
+            if total_pct >= _PROCESS_GROUP_MEM_THRESHOLD:
+                label = f"{count} process{'es' if count > 1 else ''}"
+                return (
+                    f"{display} ({label}, {total_pct:.1f}% RAM) are running"
+                    " — want me to stop them?"
+                )
 
         return None
