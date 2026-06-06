@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from laua.monitor.system import SystemSnapshot
     from laua.planner.orchestrator import StepResult
 
 # Process name prefixes → human-readable service label
@@ -63,6 +64,25 @@ class RecommendationEngine:
             if proc_rec:
                 return proc_rec
 
+        return None
+
+    def check_snapshot(self, snap: "SystemSnapshot") -> str | None:
+        """Check a live SystemSnapshot — used by the background monitor."""
+        if snap.disk_percent >= self._disk_critical:
+            return f"Disk critically full at {snap.disk_percent:.1f}% — want me to find the largest files?"
+        if snap.disk_percent >= self._disk_warn:
+            return (
+                f"Disk at {snap.disk_percent:.1f}% ({snap.disk_free_gb} GB free)"
+                " — want me to find large files to clean up?"
+            )
+        # Prefer a specific process culprit over a generic RAM alert
+        proc_rec = self._check_processes(snap.top_processes)
+        if proc_rec:
+            return f"RAM at {snap.memory_percent:.1f}% — {proc_rec}"
+        if snap.memory_percent >= self._memory_critical:
+            return f"RAM critically high at {snap.memory_percent:.1f}% — want me to show the top consumers?"
+        if snap.memory_percent >= self._memory_warn:
+            return f"RAM at {snap.memory_percent:.1f}% — want me to check which processes are consuming the most?"
         return None
 
     def _check_processes(self, processes: list[dict]) -> str | None:

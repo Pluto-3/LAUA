@@ -167,6 +167,7 @@ class LauaApp(App):
         self._last_response: str = ""
         self._sys_monitor: SystemMonitor | None = None
         self._monitor_timer: Timer | None = None
+        self._recommender: RecommendationEngine | None = None
 
     def compose(self) -> ComposeResult:
         yield _LogPane(id="log")
@@ -216,6 +217,7 @@ class LauaApp(App):
             memory_warn=mon_cfg.get("memory_alert_threshold", 88.0),
             memory_critical=95.0,
         )
+        self._recommender = recommender
         restricted = self._cfg["permissions"]["restricted_paths"]
         fm_cfg = self._cfg.get("file_manager", {})
 
@@ -652,10 +654,17 @@ class LauaApp(App):
         await asyncio.to_thread(_run_xclip)
 
     async def _bg_poll(self) -> None:
-        if self._sys_monitor is None:
+        if self._sys_monitor is None or self._recommender is None:
             return
         try:
             snap = await self._sys_monitor.snapshot()
+            # Prefer a specific actionable suggestion over a generic threshold alert
+            suggestion = self._recommender.check_snapshot(snap)
+            if suggestion:
+                log = self.query_one("#log", _LogPane)
+                await log.mount(Static(f"[monitor] {suggestion}", classes="monitor-alert"))
+                log.scroll_end(animate=False)
+                return
             alerts = detect_anomalies(snap)
             if alerts:
                 log = self.query_one("#log", _LogPane)
