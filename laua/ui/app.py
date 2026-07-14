@@ -272,16 +272,17 @@ class LauaApp(App):
 
         if not prior_history:
             await log.mount(Static(
-                "LAUA  ·  Local Autonomous Utility Agent  ·  v0.1.0",
+                "LAUA  ·  Local Autonomous Utility Agent  ·  v0.4.0",
                 classes="banner",
             ))
             await log.mount(Static(
                 f"Created by wzrdpluto  ·  AI infrastructure & automation engineer  ·  github.com/Pluto-3",
                 classes="banner-sub",
             ))
+            voice_hint = " Ctrl+T to talk." if self._cfg.get("voice", {}).get("enabled", False) else ""
             await log.mount(Static(
-                f"Manage your Ubuntu workstation in plain language — "
-                f"system stats, commands, Docker, files. Just ask.  "
+                f"Manage your Ubuntu workstation in plain language — system stats, commands, "
+                f"Docker, files, recorded workflows, and scheduled tasks.{voice_hint} Just ask.  "
                 f"·  Model: {self._current_model}  ·  ctrl+q to quit",
                 classes="dim-msg",
             ))

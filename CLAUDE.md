@@ -18,9 +18,10 @@ laua/
   config.py          # YAML config loader with env var overrides
   ollama_client.py   # Async HTTP client for Ollama Docker API
   cli.py             # Entry point → Textual UI
+  scheduler.py       # /schedule command parsing (pure, no I/O)
   executor/
     pty_session.py   # Stateful pty, $PWD tracking, argument-array only
-    safety.py        # Command blacklist + confirmation classifier
+    safety.py        # Command blacklist + confirmation classifier + shell-metachar guard
     audit.py         # Append-only SQLite audit log
   tools/
     registry.py      # Tool registration + jsonschema validation before dispatch
@@ -29,7 +30,9 @@ laua/
     orchestrator.py  # Plan → tool → result loop (MAX_AGENT_STEPS enforced)
   monitor/
     system.py        # psutil snapshot, filters own PID + Ollama container PIDs
-  memory/            # Phase 2: SQLite session persistence
+  memory/            # SQLite persistence: sessions/messages (store.py), named
+                      # workflows (workflows.py), fixed-interval schedules (schedules.py)
+  voice/             # Phase 4 slice 2: push-to-talk STT/TTS (audio.py/stt.py/tts.py)
   ui/
     app.py           # Textual TUI
 config/
@@ -39,12 +42,12 @@ tests/
 
 ## Development Phases
 
-| Phase | Scope |
-|-------|-------|
-| **1 — Core** | pty executor, safety layer, audit log, Ollama client, basic planner, system monitor, minimal Textual UI |
-| **2 — Tools & Memory** | Plugin tool registry, SQLite memory, Docker management, file manager, model routing, context window management |
-| **3 — Autonomy** | Multi-step planning, model fallback, dry-run mode, workflow recording, proactive recommendations |
-| **4 — Extended** | Voice, browser automation, GUI automation, scheduled tasks |
+| Phase | Scope | Status |
+|-------|-------|--------|
+| **1 — Core** | pty executor, safety layer, audit log, Ollama client, basic planner, system monitor, minimal Textual UI | Done |
+| **2 — Tools & Memory** | Plugin tool registry, SQLite memory, Docker management, file manager, model routing, context window management | Done |
+| **3 — Autonomy** | Multi-step planning, model fallback, dry-run mode, workflow recording, proactive recommendations, background monitor act-and-notify | Done |
+| **4 — Extended** | Scheduled tasks (slice 1), voice input/output (slice 2), browser automation, GUI automation | 2 of 4 done — browser/GUI automation not started |
 
 ## Running
 
