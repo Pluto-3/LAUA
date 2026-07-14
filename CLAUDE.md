@@ -91,12 +91,11 @@ Routing keywords in `laua/planner/router.py`. Network/docker/journal queries rou
 | qwen3.5:0.8b | 1GB | ✓ poor | Hallucinates enum values |
 | llama3.2:3b | 2GB | ✓ poor | Passes args as JSON strings |
 | mistral:latest | 4.4GB | ✓ ok | Hallucinates subfields |
-| qwen3.5:9b | 6.6GB | — | Exceeds VRAM |
-| gemma4:e2b | 7.2GB | ✓ smart | Exceeds VRAM, too slow |
-| gemma4:e4b | 9.6GB | — | Way too large |
-| deepseek-r1:8b | 5.2GB | ✗ | 400 on tool calls — reasoning-only |
+| deepseek-r1:8b | 5.2GB | ✗ | 400 on tool calls — kept for standalone reasoning use only, not LAUA-routable |
 | nomic-embed-text | 274MB | — | Embedding only |
 | glm-ocr | 2.2GB | — | OCR only |
+
+`gemma4:e4b`, `gemma4:e2b`, and `qwen3.5:9b` were removed 2026-07-14 (freed 23.4GB during a disk-space crisis) — none were reachable from `model_routing` anyway.
 
 ## Config
 
@@ -129,6 +128,14 @@ Known issue: `PtySession` (`self._session`) is a single shared instance whose `c
 Ctrl+T toggles push-to-talk: press once to start recording (via `arecord`, no shell), press again to stop, transcribe locally with faster-whisper (CPU only — Ollama already uses ~5GB of the RTX 4050's 6GB VRAM when active, too tight to share), and submit the text through the same `_submit_prompt`/`_process_request` path typed input uses. Optionally speaks the response back via Piper (`voice.tts.speak_responses`). Toggle-to-talk, not hold-to-talk — terminals don't reliably deliver key-release events. Esc cancels an in-progress recording without submitting.
 
 Fully opt-in and off by default (`voice.enabled: false` in `config/default.yaml`) — `laua/voice/stt.py` defers its `faster_whisper` import into the lazy model-loader so the app still starts with no ML/audio deps installed. Install with `pip install -e ".[voice]"`; needs a Piper voice model downloaded separately into `~/.laua/voices/`.
+
+Known gotcha: `laua` runs via a venv-python shebang (`~/.local/bin/laua` → `.venv/bin/python3`), which does **not** put `.venv/bin` on `PATH`. A bare `piper_binary: "piper"` config value won't resolve — `TextToSpeech`'s `resolve_piper_binary()` falls back to the console script installed next to `sys.executable` when `shutil.which("piper")` comes up empty. Keep this in mind for any future feature that shells out to a venv-installed console script.
+
+Piper reads text exactly as written, so acronyms/names with no vowels come out mangled — `wzrdpluto` → "wizard pluto" is handled via a small `_PRONUNCIATION_OVERRIDES` table in `laua/voice/tts.py` (audio-only substitution; on-screen text is untouched). Add more entries there if other words come out wrong.
+
+## Terminal mouse capture
+
+`LauaApp().run(mouse=False)` in `laua/cli.py` — LAUA has zero mouse-driven UI (no buttons, no click handlers), so mouse capture is disabled entirely. This matters: Textual defaults to `mouse=True`, which makes the terminal driver send xterm mouse-tracking escapes (including "report every movement") on startup — that's what silently breaks a terminal emulator's native click-drag text selection, since every mouse event gets routed to the app instead. `ENABLE_MOUSE` as a class attribute on `App` does **not** exist in this Textual version; the only real toggle is the `mouse` kwarg on `run()`/`run_async()`.
 
 ## Tests
 
