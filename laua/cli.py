@@ -5,7 +5,7 @@ from __future__ import annotations
 
 def main() -> None:
     from laua.ui.app import LauaApp
-    LauaApp().run()
+    LauaApp().run(mouse=False)
 
 
 if __name__ == "__main__":

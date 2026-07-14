@@ -57,7 +57,6 @@ class _PromptInput(Input):
 
 class LauaApp(App):
     TITLE = "LAUA — Local Autonomous Utility Agent"
-    ENABLE_MOUSE = False
     CSS = """
     Screen {
         background: ansi_default;
