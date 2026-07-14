@@ -779,8 +779,14 @@ class LauaApp(App):
     def _to_directive(suggestion: str) -> str:
         s = suggestion
         s = s.replace("— want me to stop them?", "— stop them now. After stopping, verify they are gone.")
-        s = s.replace("want me to find large files to clean up?", "find the top 10 largest files and list them with sizes.")
-        s = s.replace("want me to find the largest files?", "find the top 10 largest files and list them with sizes.")
+        _find_large_files_directive = (
+            "Check disk usage one directory at a time: run"
+            " run_command(['du', '-h', '--max-depth=1', '/home']) first, then the same for"
+            " '/var' and '/usr' as separate calls. Do not use pipes or a recursive find across"
+            " '/' — read each result and report the largest few directories with their sizes."
+        )
+        s = s.replace("want me to find large files to clean up?", _find_large_files_directive)
+        s = s.replace("want me to find the largest files?", _find_large_files_directive)
         return s
 
     async def _monitor_act(self, suggestion: str) -> None:

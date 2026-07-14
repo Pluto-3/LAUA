@@ -109,6 +109,45 @@ def test_mkfs_in_path_not_blocked():
     assert not verdict.blocked
 
 
+# ── shell metacharacters — no shell interpreter, so these are always malformed ─
+
+@pytest.mark.parametrize("args", [
+    ["find", "/", "-size", "+100M", "|", "sort", "|", "head"],
+    ["du", "-a", "/", "|", "sort", "-rn"],
+    ["ls", ">", "out.txt"],
+    ["ls", ">>", "out.txt"],
+    ["cat", "<", "in.txt"],
+    ["true", "&&", "false"],
+    ["true", ";", "false"],
+    ["sleep", "10", "&"],
+    ["echo", "$(whoami)"],
+    ["echo", "`whoami`"],
+])
+def test_shell_metacharacters_blocked(args):
+    verdict = check_command(args)
+    assert verdict.blocked, f"Expected blocked (no shell interpreter): {args}"
+    assert verdict.reason
+
+
+@pytest.mark.parametrize("args", [
+    ["find", "/tmp", "-name", "*.log"],
+    ["echo", "a && b"],   # metachars inside a single literal arg, not a separate token — fine
+])
+def test_literal_metachar_like_args_not_blocked(args):
+    """A metacharacter embedded inside one literal argument (not its own token) is fine —
+    only bare/standalone metachar tokens indicate an attempted (and unsupported) pipeline."""
+    assert not check_command(args).blocked
+
+
+def test_bare_semicolon_arg_blocked_even_if_intended_as_literal():
+    """['grep', '-c', ';', 'file.txt'] wants a literal ';' pattern, but a bare ';' token is
+    structurally identical to an accidental shell separator — no way to tell them apart at
+    the argv layer, so this over-blocks. Documented tradeoff, not a bug: the common case this
+    guard exists for (a hallucinated pipeline) vastly outweighs the rare literal-semicolon-arg case.
+    """
+    assert check_command(["grep", "-c", ";", "file.txt"]).blocked
+
+
 # ── sudo escalation classification ──────────────────────────────────────────
 
 def test_sudo_prefix_needs_sudo():

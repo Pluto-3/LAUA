@@ -26,6 +26,20 @@ _READONLY_VERBS = frozenset([
     "file", "strings", "less", "more", "find", "du", "df",
 ])
 
+# Tokens that only have meaning under a shell interpreter — run_command has none,
+# so these always indicate a malformed call rather than actual intent.
+_SHELL_METACHAR_TOKENS = frozenset(["|", "||", ";", "&&", "&", ">", ">>", "<", "<<"])
+
+
+def _has_shell_metacharacters(args: list[str]) -> bool:
+    for tok in args:
+        if tok in _SHELL_METACHAR_TOKENS:
+            return True
+        if "$(" in tok or "`" in tok:
+            return True
+    return False
+
+
 # Confirmation-required command verbs / patterns
 _CONFIRM_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\brm\b"),
@@ -54,6 +68,18 @@ def check_command(args: list[str]) -> SafetyVerdict:
     args[0] is the executable; never receives a shell string.
     """
     flat = " ".join(args)
+
+    if _has_shell_metacharacters(args):
+        return SafetyVerdict(
+            blocked=True,
+            requires_confirmation=False,
+            requires_sudo=False,
+            reason=(
+                "Shell metacharacters (|, ;, &&, >, etc.) are not supported — "
+                "run_command has no shell interpreter. Call it once per program "
+                "and reason over the returned output yourself instead of chaining commands."
+            ),
+        )
 
     for pattern in _BLOCKED_PATTERNS:
         if pattern.search(flat):

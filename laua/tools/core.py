@@ -152,14 +152,23 @@ def register_core_tools(
 ) -> None:
     registry.register(Tool(
         name="run_command",
-        description="Execute a shell command via an argument array. Returns stdout, stderr, and exit code.",  # noqa: E501
+        description=(
+            "Execute a single program directly with a literal argument list. There is NO shell "
+            "interpreter — pipes (|), redirection (>, <), and chaining (&&, ;) are not supported "
+            "and will be rejected. To filter, sort, or limit output, call this once for the base "
+            "command and reason over the returned stdout yourself. "
+            "Returns stdout, stderr, and exit code."
+        ),
         parameters_schema={
             "type": "object",
             "properties": {
                 "args": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Command and arguments as a list, e.g. ['ls', '-la', '/tmp']",
+                    "description": (
+                        "Program and its literal arguments as a list, e.g. ['ls', '-la', '/tmp']. "
+                        "No shell operators — '|', '>', ';', '&&' are not supported."
+                    ),
                     "minItems": 1,
                 },
                 "timeout": {"type": "integer", "default": 30, "description": "Timeout in seconds."},
