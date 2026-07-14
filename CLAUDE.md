@@ -121,6 +121,12 @@ Known remaining issues before Phase 3:
 
 Known issue: `PtySession` (`self._session`) is a single shared instance whose `cwd` is live, mutable state. A scheduled workflow containing a `cd` step changes that shared cwd for the next interactive command too — same pre-existing behavior as manual `/run` and monitor-autonomous-actions, just more likely to surprise since it can fire without the user doing anything.
 
+## Phase 4 — voice input/output (slice 2, opt-in)
+
+Ctrl+T toggles push-to-talk: press once to start recording (via `arecord`, no shell), press again to stop, transcribe locally with faster-whisper (CPU only — Ollama already uses ~5GB of the RTX 4050's 6GB VRAM when active, too tight to share), and submit the text through the same `_submit_prompt`/`_process_request` path typed input uses. Optionally speaks the response back via Piper (`voice.tts.speak_responses`). Toggle-to-talk, not hold-to-talk — terminals don't reliably deliver key-release events. Esc cancels an in-progress recording without submitting.
+
+Fully opt-in and off by default (`voice.enabled: false` in `config/default.yaml`) — `laua/voice/stt.py` defers its `faster_whisper` import into the lazy model-loader so the app still starts with no ML/audio deps installed. Install with `pip install -e ".[voice]"`; needs a Piper voice model downloaded separately into `~/.laua/voices/`.
+
 ## Tests
 
 ```bash

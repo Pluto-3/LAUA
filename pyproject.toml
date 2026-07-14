@@ -26,6 +26,10 @@ dev = [
     "pytest-asyncio>=0.23",
     "ruff>=0.4",
 ]
+voice = [
+    "faster-whisper>=1.0",
+    "piper-tts>=1.2",
+]
 
 [project.scripts]
 laua = "laua.cli:main"

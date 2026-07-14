@@ -32,6 +32,9 @@ from laua.tools.docker_tool import register_docker_tools
 from laua.tools.file_manager import register_file_tools
 from laua.tools.plugin_loader import load_plugins
 from laua.tools.registry import ToolRegistry
+from laua.voice.audio import AudioRecorder
+from laua.voice.stt import SpeechToText
+from laua.voice.tts import TextToSpeech
 
 
 class _LogPane(VerticalScroll):
@@ -175,6 +178,12 @@ class LauaApp(App):
         self._schedules: SchedulesStore | None = None
         self._scheduler_timer: Timer | None = None
         self._scheduler_acting: bool = False
+        self._voice_cfg: dict = {}
+        self._voice_recording: bool = False
+        self._voice_recorder: AudioRecorder | None = None
+        self._stt: SpeechToText | None = None
+        self._tts: TextToSpeech | None = None
+        self._voice_record_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         yield _LogPane(id="log")
@@ -303,6 +312,30 @@ class LauaApp(App):
                 sched_cfg.get("check_interval_seconds", 30), self._scheduler_tick
             )
 
+        voice_cfg = self._cfg.get("voice", {})
+        self._voice_cfg = voice_cfg
+        if voice_cfg.get("enabled", False):
+            import shutil
+            missing = [b for b in ("arecord", "paplay") if shutil.which(b) is None]
+            if missing:
+                await log.mount(Static(
+                    f"Warning: voice enabled but missing binaries: {', '.join(missing)}.",
+                    classes="warn-msg",
+                ))
+            stt_cfg = voice_cfg.get("stt", {})
+            self._stt = SpeechToText(
+                model_size=stt_cfg.get("model_size", "small"),
+                device=stt_cfg.get("device", "cpu"),
+                compute_type=stt_cfg.get("compute_type", "int8"),
+            )
+            self._voice_recorder = AudioRecorder(sample_rate=stt_cfg.get("sample_rate", 16000))
+            tts_cfg = voice_cfg.get("tts", {})
+            if tts_cfg.get("speak_responses", False):
+                self._tts = TextToSpeech(
+                    model_path=tts_cfg.get("voice_model_path", ""),
+                    piper_binary=tts_cfg.get("piper_binary", "piper"),
+                )
+
         self._set_status_idle()
         self.query_one("#prompt", _PromptInput).focus()
 
@@ -375,6 +408,10 @@ class LauaApp(App):
         self.query_one("#status", Static).update(
             f"✓ done in {elapsed}" + (f"  ·  {steps} steps" if steps else "")
         )
+        self.set_timer(2.0, self._set_status_idle)
+
+    def _flash_status(self, message: str) -> None:
+        self.query_one("#status", Static).update(message)
         self.set_timer(2.0, self._set_status_idle)
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -477,16 +514,22 @@ class LauaApp(App):
             await log.mount(Static("[DRY RUN] Simulating — no destructive actions will execute.", classes="dry-run-msg"))
             log.scroll_end(animate=False)
 
-        event.input.disabled = True
+        await self._submit_prompt(actual_prompt, dry_run=dry_run)
 
-        await log.mount(Static(f"> {actual_prompt}", classes="user-msg"))
+    async def _submit_prompt(self, prompt: str, dry_run: bool = False) -> None:
+        """Shared pre-flight for a new turn — used by both typed input and voice."""
+        log = self.query_one("#log", _LogPane)
+        inp = self.query_one("#prompt", _PromptInput)
+        inp.disabled = True
+
+        await log.mount(Static(f"> {prompt}", classes="user-msg"))
         log.scroll_end(animate=False)
 
         self._stream_buffer = ""
         self._stream_widget = None
         self._stream_widget_mounted = False
         assert self._orchestrator is not None
-        asyncio.create_task(self._process_request(actual_prompt, dry_run=dry_run))
+        asyncio.create_task(self._process_request(prompt, dry_run=dry_run))
 
     async def _process_request(self, prompt: str, dry_run: bool = False) -> None:
         log = self.query_one("#log", _LogPane)
@@ -541,6 +584,9 @@ class LauaApp(App):
         if result.recommendation:
             await log.mount(Static(f"→ {result.recommendation}", classes="recommend-msg"))
             log.scroll_end(animate=False)
+
+        if self._tts is not None and result.final_response and not result.error:
+            asyncio.create_task(self._speak_response(result.final_response))
 
         self._stream_widget = None
         self._stream_buffer = ""
@@ -771,6 +817,84 @@ class LauaApp(App):
 
         await asyncio.to_thread(_run_xclip)
 
+    async def key_ctrl_t(self) -> None:
+        if not self._voice_cfg.get("enabled", False):
+            return
+
+        if not self._voice_recording:
+            if self._pending_confirm is not None and not self._pending_confirm.done():
+                self._flash_status("Answer the pending y/N confirmation first.")
+                return
+            if self._orchestrator_busy:
+                self._flash_status("Busy — wait for the current turn to finish.")
+                return
+            assert self._voice_recorder is not None
+            try:
+                self._voice_recorder.start()
+            except FileNotFoundError:
+                self._flash_status("arecord not found — voice input unavailable.")
+                return
+            self._voice_recording = True
+            self.query_one("#status", Static).update("● listening… (ctrl+t to stop)")
+            max_s = self._voice_cfg.get("max_recording_seconds", 30)
+            self._voice_record_timer = self.set_timer(max_s, self._voice_auto_stop)
+        else:
+            await self._stop_voice_and_submit()
+
+    async def _voice_auto_stop(self) -> None:
+        if self._voice_recording:
+            await self._stop_voice_and_submit()
+
+    async def _stop_voice_and_submit(self) -> None:
+        if self._voice_record_timer is not None:
+            self._voice_record_timer.stop()
+            self._voice_record_timer = None
+        self._voice_recording = False
+        assert self._voice_recorder is not None
+        wav_path = await asyncio.to_thread(self._voice_recorder.stop)
+        if wav_path is None:
+            self._set_status_idle()
+            return
+
+        self.query_one("#status", Static).update("⠋ transcribing…")
+        assert self._stt is not None
+        try:
+            text = await asyncio.to_thread(self._stt.transcribe, wav_path)
+        except Exception as exc:
+            await self.query_one("#log", _LogPane).mount(
+                Static(f"Voice transcription failed: {exc}", classes="error-msg")
+            )
+            self._set_status_idle()
+            return
+        finally:
+            wav_path.unlink(missing_ok=True)
+
+        text = text.strip()
+        if not text:
+            self._flash_status("Heard nothing — try again.")
+            return
+        await self._submit_prompt(text)
+
+    async def key_escape(self) -> None:
+        if not self._voice_recording:
+            return
+        if self._voice_record_timer is not None:
+            self._voice_record_timer.stop()
+            self._voice_record_timer = None
+        self._voice_recording = False
+        assert self._voice_recorder is not None
+        wav_path = await asyncio.to_thread(self._voice_recorder.stop)
+        if wav_path is not None:
+            wav_path.unlink(missing_ok=True)
+        self._flash_status("Voice recording cancelled.")
+
+    async def _speak_response(self, text: str) -> None:
+        assert self._tts is not None
+        try:
+            await asyncio.to_thread(self._tts.synthesize_and_play, text)
+        except Exception:
+            pass
+
     @staticmethod
     def _is_actionable(suggestion: str) -> bool:
         return "want me to stop them?" in suggestion or "want me to find" in suggestion
@@ -930,6 +1054,8 @@ class LauaApp(App):
             self._monitor_timer.stop()
         if self._scheduler_timer is not None:
             self._scheduler_timer.stop()
+        if self._voice_recording and self._voice_recorder is not None:
+            self._voice_recorder.stop()
         if self._session_id is not None:
             await self._memory.end_session(self._session_id)
         await self._ollama.close()
