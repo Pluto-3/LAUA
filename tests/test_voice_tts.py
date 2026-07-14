@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-from laua.voice.tts import build_piper_command, resolve_piper_binary
+from laua.voice.tts import apply_pronunciation_overrides, build_piper_command, resolve_piper_binary
 
 
 def test_build_piper_command():
@@ -48,3 +48,22 @@ def test_resolve_piper_binary_gives_up_if_nothing_found():
     with patch("laua.voice.tts.shutil.which", return_value=None), \
          patch("laua.voice.tts.Path.exists", return_value=False):
         assert resolve_piper_binary("piper") == "piper"
+
+
+# ── apply_pronunciation_overrides — Piper reads "wzrdpluto" phonetically wrong ──
+
+def test_pronunciation_override_replaces_wzrdpluto():
+    assert apply_pronunciation_overrides("Created by wzrdpluto.") == "Created by wizard pluto."
+
+
+def test_pronunciation_override_case_insensitive():
+    assert apply_pronunciation_overrides("Made by WzrdPluto") == "Made by wizard pluto"
+
+
+def test_pronunciation_override_word_boundary_only():
+    """Don't rewrite a substring match inside a different word."""
+    assert apply_pronunciation_overrides("wzrdplutonium") == "wzrdplutonium"
+
+
+def test_pronunciation_override_noop_when_absent():
+    assert apply_pronunciation_overrides("Disk is at 92 percent.") == "Disk is at 92 percent."

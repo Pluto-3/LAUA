@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
@@ -9,6 +10,19 @@ import uuid
 from pathlib import Path
 
 from laua.voice.audio import play_file
+
+# Words Piper's grapheme-to-phoneme model can't read correctly as written —
+# spelled-out equivalents used for speech only. The on-screen text is never
+# touched; this only affects what gets sent to the synthesizer.
+_PRONUNCIATION_OVERRIDES: dict[str, str] = {
+    "wzrdpluto": "wizard pluto",
+}
+
+
+def apply_pronunciation_overrides(text: str) -> str:
+    for written, spoken in _PRONUNCIATION_OVERRIDES.items():
+        text = re.sub(rf"\b{re.escape(written)}\b", spoken, text, flags=re.IGNORECASE)
+    return text
 
 
 def build_piper_command(piper_binary: str, model_path: Path, output_path: Path) -> list[str]:
@@ -39,10 +53,11 @@ class TextToSpeech:
     def synthesize_and_play(self, text: str) -> None:
         """Blocking — call via asyncio.to_thread."""
         out_path = Path("/tmp") / f"laua-tts-{uuid.uuid4().hex}.wav"
+        spoken_text = apply_pronunciation_overrides(text)
         try:
             subprocess.run(
                 build_piper_command(self._piper_binary, self._model_path, out_path),
-                input=text.encode(),
+                input=spoken_text.encode(),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=True,
