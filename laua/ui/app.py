@@ -892,8 +892,13 @@ class LauaApp(App):
         assert self._tts is not None
         try:
             await asyncio.to_thread(self._tts.synthesize_and_play, text)
-        except Exception:
-            pass
+        except Exception as exc:
+            # Never let a TTS failure affect the chat turn itself — it already
+            # completed — but don't fail silently either, or voice-not-speaking
+            # is impossible to diagnose.
+            await self.query_one("#log", _LogPane).mount(
+                Static(f"[voice] speech playback failed: {exc}", classes="dim-msg")
+            )
 
     @staticmethod
     def _is_actionable(suggestion: str) -> bool:
