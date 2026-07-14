@@ -17,6 +17,7 @@ from laua.config import load_config
 from laua.executor.audit import AuditLog
 from laua.executor.pty_session import PtySession
 from laua.memory.context import ContextManager
+from laua.memory.schedules import SchedulesStore
 from laua.memory.store import MemoryStore
 from laua.memory.workflows import WorkflowStore
 from laua.monitor.recommendations import RecommendationEngine
@@ -25,6 +26,7 @@ from laua.ollama_client import OllamaClient
 from laua.planner.orchestrator import Orchestrator, StepResult
 from laua.planner.planner import Planner
 from laua.planner.router import ModelRouter
+from laua.scheduler import parse_schedule_command
 from laua.tools.core import register_core_tools
 from laua.tools.docker_tool import register_docker_tools
 from laua.tools.file_manager import register_file_tools
@@ -170,6 +172,9 @@ class LauaApp(App):
         self._recommender: RecommendationEngine | None = None
         self._orchestrator_busy: bool = False
         self._monitor_acting: bool = False
+        self._schedules: SchedulesStore | None = None
+        self._scheduler_timer: Timer | None = None
+        self._scheduler_acting: bool = False
 
     def compose(self) -> ComposeResult:
         yield _LogPane(id="log")
@@ -184,6 +189,10 @@ class LauaApp(App):
         workflows_path = mem_cfg.get("workflows_db_path", "~/.laua/workflows.db")
         self._workflows = WorkflowStore(workflows_path)
         await self._workflows.init()
+
+        schedules_path = mem_cfg.get("schedules_db_path", "~/.laua/schedules.db")
+        self._schedules = SchedulesStore(schedules_path)
+        await self._schedules.init()
 
         self._show_plan = self._cfg.get("ui", {}).get("show_plan", True)
         self._current_model = self._cfg["ollama"]["default_model"]
@@ -287,6 +296,12 @@ class LauaApp(App):
         )
         await self._sys_monitor.refresh_excluded_pids()
         self._monitor_timer = self.set_interval(poll_interval, self._bg_poll)
+
+        sched_cfg = self._cfg.get("scheduler", {})
+        if sched_cfg.get("enabled", True):
+            self._scheduler_timer = self.set_interval(
+                sched_cfg.get("check_interval_seconds", 30), self._scheduler_tick
+            )
 
         self._set_status_idle()
         self.query_one("#prompt", _PromptInput).focus()
@@ -432,6 +447,26 @@ class LauaApp(App):
             name = prompt[5:].strip()
             if name:
                 asyncio.create_task(self._replay_workflow(name))
+            return
+
+        if prompt == "/schedules":
+            asyncio.create_task(self._cmd_list_schedules())
+            return
+
+        if prompt.startswith("/schedule-enable "):
+            asyncio.create_task(self._cmd_set_schedule_enabled(prompt[17:].strip(), True))
+            return
+
+        if prompt.startswith("/schedule-disable "):
+            asyncio.create_task(self._cmd_set_schedule_enabled(prompt[18:].strip(), False))
+            return
+
+        if prompt.startswith("/schedule-delete "):
+            asyncio.create_task(self._cmd_delete_schedule(prompt[17:].strip()))
+            return
+
+        if prompt.startswith("/schedule "):
+            asyncio.create_task(self._cmd_create_schedule(prompt[10:].strip()))
             return
 
         dry_run = False
@@ -589,6 +624,76 @@ class LauaApp(App):
             await log.mount(Static("\n".join(lines), classes="dim-msg"))
         log.scroll_end(animate=False)
 
+    async def _cmd_list_schedules(self) -> None:
+        log = self.query_one("#log", _LogPane)
+        assert self._schedules is not None
+        schedules = await self._schedules.list_schedules()
+        if not schedules:
+            await log.mount(Static("No schedules.", classes="dim-msg"))
+        else:
+            lines = ["Schedules:"]
+            for s in schedules:
+                state = "enabled" if s["enabled"] else "disabled"
+                lines.append(
+                    f"  {s['name']} -> {s['workflow_name']}"
+                    f"  every {s['interval_seconds']}s  ({state}, run {s['run_count']}x,"
+                    f" next {s['next_run']})"
+                )
+            await log.mount(Static("\n".join(lines), classes="dim-msg"))
+        log.scroll_end(animate=False)
+
+    async def _cmd_create_schedule(self, rest: str) -> None:
+        log = self.query_one("#log", _LogPane)
+        assert self._schedules is not None
+        assert self._workflows is not None
+        try:
+            name, workflow_name, interval_seconds = parse_schedule_command(rest)
+        except ValueError as exc:
+            await log.mount(Static(str(exc), classes="error-msg"))
+            log.scroll_end(animate=False)
+            return
+
+        known = {w["name"] for w in await self._workflows.list_workflows()}
+        if workflow_name not in known:
+            await log.mount(Static(
+                f"No workflow named '{workflow_name}'. Record it first with /record.",
+                classes="error-msg",
+            ))
+            log.scroll_end(animate=False)
+            return
+
+        await self._schedules.create(name, workflow_name, interval_seconds)
+        await log.mount(Static(
+            f"Scheduled '{name}' -> '{workflow_name}' every {interval_seconds}s.",
+            classes="dim-msg",
+        ))
+        log.scroll_end(animate=False)
+
+    async def _cmd_set_schedule_enabled(self, name: str, enabled: bool) -> None:
+        log = self.query_one("#log", _LogPane)
+        assert self._schedules is not None
+        if not name:
+            return
+        found = await self._schedules.set_enabled(name, enabled)
+        state = "enabled" if enabled else "disabled"
+        if found:
+            await log.mount(Static(f"Schedule '{name}' {state}.", classes="dim-msg"))
+        else:
+            await log.mount(Static(f"No schedule named '{name}'.", classes="error-msg"))
+        log.scroll_end(animate=False)
+
+    async def _cmd_delete_schedule(self, name: str) -> None:
+        log = self.query_one("#log", _LogPane)
+        assert self._schedules is not None
+        if not name:
+            return
+        found = await self._schedules.delete(name)
+        if found:
+            await log.mount(Static(f"Deleted schedule '{name}'.", classes="dim-msg"))
+        else:
+            await log.mount(Static(f"No schedule named '{name}'.", classes="error-msg"))
+        log.scroll_end(animate=False)
+
     async def _replay_workflow(self, name: str) -> None:
         log = self.query_one("#log", _LogPane)
         inp = self.query_one("#prompt", _PromptInput)
@@ -624,10 +729,11 @@ class LauaApp(App):
         inp.focus()
 
     async def _confirm(self, args: list[str], requires_sudo: bool = False) -> bool:
-        if self._monitor_acting:
+        if self._monitor_acting or self._scheduler_acting:
+            prefix = "[monitor]" if self._monitor_acting else "[scheduler]"
             log = self.query_one("#log", _LogPane)
             await log.mount(Static(
-                f"[monitor] auto-approved: {' '.join(args)}", classes="dim-msg"
+                f"{prefix} auto-approved: {' '.join(args)}", classes="dim-msg"
             ))
             log.scroll_end(animate=False)
             return True
@@ -754,9 +860,70 @@ class LauaApp(App):
         except Exception:
             pass
 
+    async def _run_scheduled(self, schedule: dict) -> None:
+        assert self._workflows is not None
+        assert self._schedules is not None
+        log = self.query_one("#log", _LogPane)
+        name = schedule["name"]
+        workflow_name = schedule["workflow_name"]
+
+        steps = await self._workflows.load(workflow_name)
+        if steps is None:
+            await log.mount(Static(
+                f"[scheduler] '{name}': workflow '{workflow_name}' no longer exists — disabling.",
+                classes="error-msg",
+            ))
+            log.scroll_end(animate=False)
+            await self._schedules.set_enabled(name, False)
+            return
+
+        await log.mount(Static(
+            f"[scheduler] running '{name}' ({workflow_name}, {len(steps)} steps)…",
+            classes="monitor-alert",
+        ))
+        log.scroll_end(animate=False)
+
+        history_len = len(self._orchestrator._history) if self._orchestrator else 0
+        self._scheduler_acting = True
+        self._orchestrator_busy = True
+        had_error = False
+        try:
+            for i, step_data in enumerate(steps, start=1):
+                tool_name = step_data["tool_name"]
+                arguments = step_data["arguments"]
+                try:
+                    result = await self._tools.dispatch(tool_name, arguments)
+                    sr = StepResult(step=i, tool_name=tool_name, arguments=arguments, result=result)
+                except Exception as exc:
+                    sr = StepResult(step=i, tool_name=tool_name, arguments=arguments, result=None, error=str(exc))
+                    had_error = True
+                await self._mount_step(sr)
+            status = "completed with errors" if had_error else "completed"
+            await log.mount(Static(f"[scheduler] '{name}' {status}.", classes="monitor-alert"))
+            log.scroll_end(animate=False)
+        finally:
+            if self._orchestrator is not None:
+                del self._orchestrator._history[history_len:]
+            self._scheduler_acting = False
+            self._orchestrator_busy = False
+            await self._schedules.mark_run(name, schedule["interval_seconds"])
+
+    async def _scheduler_tick(self) -> None:
+        if self._schedules is None or self._workflows is None:
+            return
+        if self._orchestrator_busy:
+            return
+        try:
+            for schedule in await self._schedules.due_schedules():
+                await self._run_scheduled(schedule)
+        except Exception:
+            pass
+
     async def on_unmount(self) -> None:
         if self._monitor_timer is not None:
             self._monitor_timer.stop()
+        if self._scheduler_timer is not None:
+            self._scheduler_timer.stop()
         if self._session_id is not None:
             await self._memory.end_session(self._session_id)
         await self._ollama.close()

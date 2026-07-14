@@ -21,8 +21,13 @@ monitor:
 memory:
   db_path: "~/.laua/laua.db"
   workflows_db_path: "~/.laua/workflows.db"
+  schedules_db_path: "~/.laua/schedules.db"
   max_history_tokens: 4096
   context_window_trigger: 0.80
+
+scheduler:
+  enabled: true
+  check_interval_seconds: 30
 
 permissions:
   restricted_paths:

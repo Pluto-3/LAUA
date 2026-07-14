@@ -115,6 +115,12 @@ Known remaining issues before Phase 3:
 - Network output (`ip addr`) produces verbose raw text that 4b sometimes misreads — mitigated with `ip -brief` in lingo map
 - No streaming indicator for tool steps (only spinner total elapsed shown)
 
+## Phase 4 — scheduled tasks (slice 1, TUI-only)
+
+`/schedule <name> <workflow_name> every <N> <minutes|hours>` fires a previously-`/record`ed workflow on a fixed interval while the app is open, via a second `set_interval` timer (`_scheduler_tick`/`_run_scheduled` in `laua/ui/app.py`), storing state in `SchedulesStore` (`laua/memory/schedules.py`, `~/.laua/schedules.db`). Manage with `/schedules`, `/schedule-enable`, `/schedule-disable`, `/schedule-delete`. Replay dispatches recorded tool calls directly (same primitive as `/run`), auto-confirming since the steps were already reviewed once at record time.
+
+Known issue: `PtySession` (`self._session`) is a single shared instance whose `cwd` is live, mutable state. A scheduled workflow containing a `cd` step changes that shared cwd for the next interactive command too — same pre-existing behavior as manual `/run` and monitor-autonomous-actions, just more likely to surprise since it can fire without the user doing anything.
+
 ## Tests
 
 ```bash
